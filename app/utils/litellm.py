@@ -126,8 +126,15 @@ def extract_token_counts(usage) -> tuple[int, int, int, int]:
     if completion_tokens_details:
         reasoning_tokens = getattr(completion_tokens_details, "reasoning_tokens", 0) or 0
 
-    # completion_tokens가 추론 토큰을 빼고 보고된 경우에만 보정한다.
-    if reasoning_tokens and total_tokens >= input_tokens + output_tokens + reasoning_tokens:
+    if reasoning_tokens:
+        # completion_tokens가 추론 토큰을 빼고 보고된 경우에만 보정한다.
+        if total_tokens >= input_tokens + output_tokens + reasoning_tokens:
+            output_tokens += reasoning_tokens
+    elif total_tokens > input_tokens + output_tokens:
+        # 추론 토큰을 따로 보고하지 않는 경로(Google의 OpenAI 호환 엔드포인트 등)에서는
+        # completion_tokens에 thought 토큰이 빠진 채로 오고 total_tokens에만 반영된다.
+        # (실측: prompt=12, completion=1, total=57) 차이를 추론 토큰으로 간주해 복원한다.
+        reasoning_tokens = total_tokens - input_tokens - output_tokens
         output_tokens += reasoning_tokens
 
     return input_tokens, cached_input_tokens, output_tokens, reasoning_tokens
