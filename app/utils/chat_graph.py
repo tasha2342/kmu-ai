@@ -73,8 +73,20 @@ LANGUAGE_LABELS = {
 }
 """응답 언어 지시에 사용할 언어 표기 (KAI-REQ-029 다국어 지원)"""
 
-CLASSIFY_MAX_TOKENS = 8
-"""의도 분류 응답 토큰 상한. 라벨 한 단어만 받으면 되므로 짧게 제한합니다."""
+CLASSIFY_MAX_TOKENS = 384
+"""의도·언어 판정 응답 토큰 상한
+
+받아야 할 값은 `academic|ko` 한 줄뿐이지만 상한을 크게 잡습니다. gemma-4-31b-it은
+thinking을 끌 수 없고(상위 CLAUDE.md 참고) 사고 과정도 출력 토큰을 소비하는데,
+예전 값(8)에서는 사고 과정만으로 상한에 걸려 **content가 항상 빈 문자열**로 돌아왔습니다.
+(실측: output_tokens=5 / reasoning_tokens=5 → 한국어 질문까지 전부 unknown으로 분류되어
+되묻기로 빠지고 있었음)
+
+실측한 사고 토큰은 0~253개로 편차가 큽니다. 혼용 문장처럼 판단이 갈리는 발화일수록
+길게 생각합니다. 상한에 걸리면 응답이 비고, 그때는 표기 문자 기반 추정으로 물러섭니다.
+(`guess_language_by_script`) 상한을 더 키우면 그만큼 첫 응답까지의 지연이 늘어나므로,
+"대부분을 담되 폭주는 끊는" 값으로 둡니다.
+"""
 
 SUMMARY_MAX_TOKENS = 512
 """세션 요약 응답 토큰 상한"""
@@ -99,8 +111,10 @@ SUMMARY_INPUT_MAX_CHARS = 8000
 
 
 CLASSIFY_SYSTEM_PROMPT = (
-    "당신은 계명대학교 학생 지원 챗봇의 의도 분류기입니다.\n"
-    "사용자 발화를 아래 라벨 중 하나로만 분류합니다.\n"
+    "당신은 계명대학교 학생 지원 챗봇의 분류기입니다.\n"
+    "사용자 발화 하나를 읽고 **의도**와 **답변 언어**를 함께 판정합니다.\n"
+    "\n"
+    "[의도 라벨]\n"
     "- academic: 학사 규정, 수강신청, 장학금, 졸업요건, 학사일정, 교내 제도·공지 문의\n"
     "- career: 취업, 진로, 채용, 인턴, 자격증, 취업 지원 프로그램 문의.\n"
     "  이력서·자기소개서·포트폴리오 첨삭이나 면접 준비 요청도 career입니다.\n"
@@ -111,12 +125,33 @@ CLASSIFY_SYSTEM_PROMPT = (
     "- abuse: 비속어, 욕설, 장난, 서비스 목적과 무관한 발화\n"
     "- unknown: 위 어디에도 해당하지 않거나 의미를 알 수 없는 모호한 발화\n"
     "\n"
-    "반드시 라벨 한 단어만 소문자로 출력하고, 설명이나 문장 부호를 덧붙이지 마세요."
+    "[답변 언어 라벨]\n"
+    "ko(한국어) / en(영어) / zh(중국어) / vi(베트남어) 중 발화의 주된 언어를 고릅니다.\n"
+    "- 한국어와 외국어가 섞이면 조사·어미가 한국어일 때 ko, 한국어가 고유명사뿐일 때 그 외국어입니다.\n"
+    "- 위 네 언어가 아니면 en입니다.\n"
+    "\n"
+    "출력은 `의도|언어` 형식의 한 줄뿐입니다. 예: academic|ko\n"
+    "고민하지 말고 곧바로 한 줄만 출력하세요. 설명이나 따옴표를 덧붙이지 마세요."
 )
-"""의도 분류 시스템 프롬프트 (KAI-REQ-030)"""
+"""의도·응답 언어 통합 분류 시스템 프롬프트 (KAI-REQ-029/030)
+
+언어 판정을 별도 LLM 호출로 두지 않고 의도 분류에 합친 이유는, 챗봇 한 턴에 이미
+재작성·분류·응답·요약으로 여러 번 모델을 호출하고 있어 호출을 더 늘리면 첫 응답까지의
+지연과 비용이 그만큼 커지기 때문입니다. 두 판정 모두 "발화 한 줄을 보고 라벨을 고르는"
+같은 성격의 작업이라 한 번의 호출로 충분합니다.
+"""
 
 CONDENSE_MAX_TOKENS = 96
-"""후속 질문 재작성 응답 토큰 상한. 한 문장짜리 질문만 받으면 되므로 짧게 제한합니다."""
+"""후속 질문 재작성 응답 토큰 상한. 한 문장짜리 질문만 받으면 되므로 짧게 제한합니다.
+
+주의: 이 상한 때문에 **현재 재작성은 사실상 동작하지 않습니다.** gemma-4-31b-it은 thinking을
+끌 수 없어 사고 과정이 먼저 출력 토큰을 쓰는데, 이 작업은 사고가 길어 상한에 걸립니다.
+(실측: 96 상한에서 93/93, 320으로 올려도 317/317 — 둘 다 사고만 하다 잘려 결과가 빈 문자열)
+결과가 비면 원문으로 검색을 이어가므로 동작은 유지되지만, 후속 질문의 맥락 복원은 되지 않습니다.
+상한을 더 올리면 재작성 한 번에 10초 이상이 들어 첫 응답이 그만큼 늦어지므로, 값을 키우는 것으로는
+해결되지 않습니다. (사고를 덜 하게 만드는 프롬프트 재설계나 다른 모델이 필요합니다)
+`CLASSIFY_MAX_TOKENS`와 달리 이 값을 올리지 않은 이유가 이것입니다.
+"""
 
 CONDENSE_HISTORY_LIMIT = 6
 """후속 질문 재작성에 참고할 직전 대화 턴 수 (최근 3왕복)"""
@@ -130,6 +165,7 @@ CONDENSE_SYSTEM_PROMPT = (
     "- 이전 대화에 없는 정보를 새로 지어내지 않습니다.\n"
     "- 마지막 발화가 이미 그 자체로 완결된 질문이면 원문을 그대로 출력합니다.\n"
     "- 인사·잡담처럼 검색이 필요 없는 발화도 원문을 그대로 출력합니다.\n"
+    "- **마지막 발화의 언어를 그대로 유지합니다. 다른 언어로 번역하지 마세요.**\n"
     "- 재작성한 질문 한 문장만 출력하고, 설명이나 따옴표를 덧붙이지 않습니다."
 )
 """후속 질문 재작성 시스템 프롬프트
@@ -138,20 +174,36 @@ CONDENSE_SYSTEM_PROMPT = (
 지식베이스 검색 전에 질문을 독립적인 형태로 복원해야 근거를 찾을 수 있습니다.
 """
 
+def _shot(query: str, intent: ChatIntent, language: Language) -> tuple[str, str]:
+    """Few-shot 예시 한 쌍을 `발화 -> "의도|언어"` 형태로 만듭니다."""
+
+    return query, f"{intent.value}|{language.value}"
+
+
 CLASSIFY_FEW_SHOTS: list[tuple[str, str]] = [
-    ("2026학년도 1학기 수강신청 기간이 언제야?", ChatIntent.ACADEMIC.value),
-    ("졸업하려면 학점 몇 점 들어야 해?", ChatIntent.ACADEMIC.value),
-    ("교내 채용 설명회 일정 알려줘", ChatIntent.CAREER.value),
-    ("자기소개서 첨삭 프로그램 있어?", ChatIntent.CAREER.value),
-    ("아래 이력서 한번 봐줄래? ## 1. 지원 동기 저는 백엔드 개발자를 지망하여", ChatIntent.CAREER.value),
-    ("내 이번 학기 성적 알려줘", ChatIntent.PERSONAL.value),
-    ("내가 지금까지 들은 전공 학점 몇이야?", ChatIntent.PERSONAL.value),
-    ("방금 올린 PDF에서 제출 기한만 정리해줘", ChatIntent.DOCUMENT.value),
-    ("안녕! 넌 누구야?", ChatIntent.SMALL_TALK.value),
-    ("야 이 멍청한 봇아", ChatIntent.ABUSE.value),
-    ("그거 어떻게 해?", ChatIntent.UNKNOWN.value),
+    _shot("2026학년도 1학기 수강신청 기간이 언제야?", ChatIntent.ACADEMIC, Language.KO),
+    _shot("졸업하려면 학점 몇 점 들어야 해?", ChatIntent.ACADEMIC, Language.KO),
+    _shot("교내 채용 설명회 일정 알려줘", ChatIntent.CAREER, Language.KO),
+    _shot("자기소개서 첨삭 프로그램 있어?", ChatIntent.CAREER, Language.KO),
+    _shot("아래 이력서 한번 봐줄래? ## 1. 지원 동기 저는 백엔드 개발자를 지망하여", ChatIntent.CAREER, Language.KO),
+    _shot("내 이번 학기 성적 알려줘", ChatIntent.PERSONAL, Language.KO),
+    _shot("내가 지금까지 들은 전공 학점 몇이야?", ChatIntent.PERSONAL, Language.KO),
+    _shot("방금 올린 PDF에서 제출 기한만 정리해줘", ChatIntent.DOCUMENT, Language.KO),
+    _shot("안녕! 넌 누구야?", ChatIntent.SMALL_TALK, Language.KO),
+    _shot("야 이 멍청한 봇아", ChatIntent.ABUSE, Language.KO),
+    _shot("그거 어떻게 해?", ChatIntent.UNKNOWN, Language.KO),
+    # 한국어 이외 언어 예시. 유학생이 실제로 쓰는 표현이라 의도 라벨은 한국어와 같아야 하고
+    # 언어 라벨만 달라져야 한다는 점을 모델에 보여 줍니다. (KAI-REQ-029)
+    _shot("How do I apply for a leave of absence?", ChatIntent.ACADEMIC, Language.EN),
+    _shot("Where can I get help with my resume?", ChatIntent.CAREER, Language.EN),
+    _shot("请问奖学金怎么申请？", ChatIntent.ACADEMIC, Language.ZH),
+    _shot("Thời gian đăng ký môn học là khi nào?", ChatIntent.ACADEMIC, Language.VI),
+    _shot("Xin chào, bạn là ai?", ChatIntent.SMALL_TALK, Language.VI),
+    # 혼용 문장. 어느 쪽 언어가 문장의 뼈대인지로 갈린다는 것을 두 예시로 대조해 보여 줍니다.
+    _shot("수강신청 deadline이 언제야?", ChatIntent.ACADEMIC, Language.KO),
+    _shot("When is the 수강신청 deadline?", ChatIntent.ACADEMIC, Language.EN),
 ]
-"""의도 분류 Few-shot 예시 (KAI-REQ-030)"""
+"""의도·언어 통합 분류 Few-shot 예시 (KAI-REQ-029/030)"""
 
 
 class ChatGraphState(TypedDict, total=False):
@@ -178,7 +230,18 @@ class ChatGraphState(TypedDict, total=False):
     message_id: str
     """사용자 메시지 ID"""
     language: Language
-    """응답 언어"""
+    """응답 언어
+
+    `language_explicit`가 False면 `classify_intent`가 사용자 발화를 보고 덮어씁니다.
+    """
+    language_explicit: bool
+    """사용자가 응답 언어를 직접 고른 상태인지 여부
+
+    True면 자동 감지 결과보다 지정 언어가 우선합니다. UI에서 언어를 골랐다는 것은
+    "질문은 영어로 하지만 답은 한국어로 받겠다" 같은 의도일 수 있어 뒤집으면 안 됩니다.
+    """
+    detected_language: Optional[Language]
+    """자동 감지된 발화 언어 (명시 지정이어도 기록은 남깁니다)"""
     history: list[dict]
     """최근 대화 이력 (`{"role": ..., "content": ...}`)"""
     summary: Optional[str]
@@ -273,6 +336,21 @@ def _language_label(language: Optional[Language]) -> str:
     return LANGUAGE_LABELS.get(language or Language.KO, LANGUAGE_LABELS[Language.KO])
 
 
+USE_LINKS_TEXT = {
+    Language.KO: "아래 바로가기를 이용해 주세요.",
+    Language.EN: "Please use the links below.",
+    Language.ZH: "请使用以下快捷链接。",
+    Language.VI: "Vui lòng sử dụng các liên kết dưới đây.",
+}
+"""개인정보 안내에 덧붙이는 바로가기 안내 문장 (KAI-REQ-029)"""
+
+
+def _use_links_text(language: Optional[Language]) -> str:
+    """바로가기 안내 문장을 응답 언어로 반환합니다."""
+
+    return USE_LINKS_TEXT.get(language or Language.KO, USE_LINKS_TEXT[Language.KO])
+
+
 def _external_links_text() -> str:
     """외부 서비스 바로가기 목록을 문자열로 구성합니다. (KAI-REQ-002/021)
 
@@ -349,6 +427,148 @@ def parse_intent(text: Optional[str]) -> ChatIntent:
         if intent.value in normalized:
             return intent
     return ChatIntent.UNKNOWN
+
+
+def parse_intent_and_language(text: Optional[str]) -> tuple[ChatIntent, Optional[Language]]:
+    """모델 응답에서 `의도|언어`를 파싱합니다.
+
+    언어 라벨이 없거나 지원하지 않는 값이면 언어는 None으로 돌려주고, 호출자가 표기 문자
+    기반 추정으로 물러섭니다. 언어를 못 읽었다고 의도까지 버릴 이유는 없기 때문입니다.
+
+    Args:
+        text (Optional[str]): 모델 응답 (예: "academic|ko")
+
+    Returns:
+        tuple[ChatIntent, Optional[Language]]: (감지 의도, 감지 언어 또는 None)
+    """
+
+    normalized = (text or "").strip().lower()
+    if not normalized:
+        return ChatIntent.UNKNOWN, None
+
+    # 모델이 여러 줄을 뱉는 경우 라벨이 있는 첫 줄만 씁니다.
+    line = next((item.strip() for item in normalized.splitlines() if item.strip()), "")
+    intent_part, _, language_part = line.partition("|")
+
+    language: Optional[Language] = None
+    candidate = language_part.strip().strip(".`\"' ")
+    if candidate:
+        try:
+            language = Language(candidate)
+        except ValueError:
+            language = None
+
+    return parse_intent(intent_part or line), language
+
+
+VIETNAMESE_MARKS = set("ăâđêôơưĂÂĐÊÔƠƯàáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩị"
+                       "òóỏõọồốổỗộờớởỡợùúủũụừứửữựỳýỷỹỵ")
+"""베트남어 고유의 성조·모음 표기 문자
+
+라틴 문자만으로는 영어와 베트남어를 가를 수 없어, 베트남어에만 나타나는 글자를 신호로 씁니다.
+"""
+
+
+def guess_language_by_script(text: Optional[str]) -> Language:
+    """표기 문자만 보고 응답 언어를 추정합니다.
+
+    LLM 판정이 실패했을 때(모델 장애·빈 응답·라벨 누락) 쓰는 안전망입니다. 이 경로가 있어야
+    모델이 흔들려도 최소한 "질문한 문자로 답한다"는 동작이 유지됩니다.
+
+    혼용 문장은 한글이 라틴 문자보다 지나치게 적을 때만 외국어로 봅니다.
+    "수강신청 deadline이 언제야?"처럼 조사·어미가 한글로 남아 있으면 한글 비중이 높고,
+    "When is the 수강신청 deadline?"처럼 고유명사만 한글이면 비중이 낮기 때문입니다.
+    한글 한 글자를 라틴 문자 3자와 같게 세는데, 한글은 음절 단위이고 라틴 문자는 낱자 단위라
+    그대로 비교하면 같은 분량의 한국어가 항상 불리하게 나오기 때문입니다.
+
+    Args:
+        text (Optional[str]): 사용자 발화
+
+    Returns:
+        Language: 추정 언어 (근거가 없으면 서비스 기본값인 한국어)
+    """
+
+    text = text or ""
+    # 한글 음절(U+AC00~U+D7A3)과 호환 자모(U+3130~U+318F, "ㅋㅋ" 같은 표현)를 함께 셉니다.
+    hangul = sum(1 for char in text if "가" <= char <= "힣" or "㄰" <= char <= "㆏")
+    han = sum(1 for char in text if "一" <= char <= "鿿")
+    latin = sum(1 for char in text if char.isascii() and char.isalpha())
+    vietnamese = sum(1 for char in text if char in VIETNAMESE_MARKS)
+
+    if hangul and hangul * 3 >= latin:
+        return Language.KO
+    if vietnamese:
+        return Language.VI
+    if han:
+        # 한국어 발화에도 한자가 섞일 수 있으나, 그 경우는 위에서 이미 한국어로 걸러집니다.
+        return Language.ZH
+    if latin:
+        return Language.EN
+    return Language.KO
+
+
+CANNED_MESSAGE_TRANSLATIONS: dict[str, dict[Language, str]] = {
+    "fallback": {
+        Language.EN: ("Sorry, I couldn't find information for that question. "
+                      "For academic inquiries, please contact the Academic Affairs Team (053-580-5114)."),
+        Language.ZH: "抱歉，未能找到该问题的相关信息。学业相关咨询请联系学务支援组（053-580-5114）。",
+        Language.VI: ("Xin lỗi, tôi không tìm thấy thông tin cho câu hỏi này. "
+                      "Về các vấn đề học vụ, vui lòng liên hệ Phòng Hỗ trợ Học vụ (053-580-5114)."),
+    },
+    "abuse": {
+        Language.EN: ("I'm a chatbot that provides Keimyung University academic and career information. "
+                      "Please ask about academic schedules, scholarships, graduation requirements, or careers."),
+        Language.ZH: "我是提供启明大学学务与就业信息的聊天机器人。请咨询学事日程、奖学金、毕业条件、就业信息等。",
+        Language.VI: ("Tôi là chatbot cung cấp thông tin học vụ và việc làm của Đại học Keimyung. "
+                      "Vui lòng hỏi về lịch học vụ, học bổng, điều kiện tốt nghiệp hoặc việc làm."),
+    },
+    "ambiguous": {
+        Language.EN: ("Could you be a bit more specific? For example, adding the semester or subject "
+                      "(like \"course registration period for spring 2026\") helps me answer accurately."),
+        Language.ZH: "能否请您说得更具体一些？例如写明学期或对象（如“2026学年第1学期选课时间”），我才能准确回答。",
+        Language.VI: ("Bạn có thể nói cụ thể hơn không? Ví dụ, nếu ghi rõ học kỳ hoặc đối tượng "
+                      "(như \"thời gian đăng ký môn học học kỳ 1 năm 2026\") thì tôi sẽ trả lời chính xác hơn."),
+    },
+    "idle_closed": {
+        Language.EN: "The conversation was closed after a period of inactivity. Please ask again to start a new one.",
+        Language.ZH: "由于长时间无输入，对话已结束。如有其他问题，请重新提问。",
+        Language.VI: "Cuộc trò chuyện đã kết thúc do không có hoạt động. Hãy đặt câu hỏi mới để bắt đầu lại.",
+    },
+    "personal_data_unavailable": {
+        Language.EN: ("Lookups of personal data such as student ID, grades, and course history will be available "
+                      "once the integration with the university system is complete."),
+        Language.ZH: "学号、成绩、修课记录等个人信息查询将在校内系统对接完成后提供。",
+        Language.VI: ("Việc tra cứu thông tin cá nhân như mã số sinh viên, điểm số, lịch sử học phần sẽ được "
+                      "cung cấp sau khi hoàn tất kết nối với hệ thống của trường."),
+    },
+}
+"""정형 안내 문구의 언어별 대응 문구 (KAI-REQ-029)
+
+`app_config.chatbot.messages`는 한국어 한 벌만 담는 구조라, 외국어로 질문한 사용자에게도
+한국어 안내가 그대로 나갑니다. 이 문구들은 LLM이 생성하지 않고 그대로 전달되는 값이라
+번역할 기회가 아예 없으므로, 코드에 언어별 문구를 함께 두고 골라 씁니다.
+
+한국어는 여기 두지 않습니다. 운영 중 문구 수정은 설정으로 하는 것이 원칙이라
+(`ChatbotMessagesConfig` 주석 참고) 기본 언어만큼은 설정값을 그대로 써야 하기 때문입니다.
+설정에서 한국어 문구를 고친 경우 외국어 문구는 따라 바뀌지 않는다는 점이 이 구조의 한계입니다.
+"""
+
+
+def localized_message(key: str, language: Optional[Language]) -> str:
+    """정형 안내 문구를 응답 언어에 맞춰 반환합니다.
+
+    Args:
+        key (str): `app_config.chatbot.messages`의 필드명
+        language (Optional[Language]): 응답 언어
+
+    Returns:
+        str: 안내 문구 (해당 언어 문구가 없으면 설정에 있는 한국어 문구)
+    """
+
+    default = getattr(app_config.chatbot.messages, key, "") or ""
+    if language is None or language == Language.KO:
+        return default
+    return CANNED_MESSAGE_TRANSLATIONS.get(key, {}).get(language, default)
 
 
 async def complete_text(
@@ -717,23 +937,37 @@ async def condense_query(state: ChatGraphState, config: Optional[RunnableConfig]
 
 
 async def classify_intent(state: ChatGraphState, config: Optional[RunnableConfig] = None) -> dict:
-    """사용자 발화의 의도를 분류합니다. (KAI-REQ-030/037/038)
+    """사용자 발화의 의도와 응답 언어를 한 번의 호출로 판정합니다. (KAI-REQ-029/030/037/038)
 
-    비속어 사전 필터를 먼저 적용하고, 걸리지 않으면 LLM으로 라벨 한 단어를 분류합니다.
+    비속어 사전 필터를 먼저 적용하고, 걸리지 않으면 LLM으로 `의도|언어` 한 줄을 받습니다.
     모델을 사용할 수 없으면 되묻기 대신 검색을 시도하도록 `intent_error`를 세워 둡니다.
     (모델 장애를 "질문이 모호합니다"로 안내하면 사용자가 오해하기 때문입니다.)
+
+    언어는 사용자가 UI에서 직접 고른 경우(`language_explicit`) 판정 결과로 덮어쓰지 않습니다.
     """
 
     deps = _deps(config)
     # 재작성된 질문으로 분류합니다. 후속 질문("그럼 기간은?")을 원문 그대로 분류하면
     # 맥락이 없어 unknown으로 떨어지고 되묻기로 빠집니다.
     query = state.get("search_query") or state.get("query") or ""
+    # 언어는 사용자가 실제로 입력한 원문을 기준으로 판정해야 합니다. 재작성은 맥락을 채워 넣는
+    # 과정이라 원문에 없던 한국어가 섞여 들어올 수 있습니다.
+    original_query = state.get("query") or query
+
+    def resolved(detected: Optional[Language]) -> dict:
+        """감지 결과를 명시 지정 여부에 맞춰 상태 변경분으로 만듭니다."""
+
+        detected = detected or guess_language_by_script(original_query)
+        if state.get("language_explicit"):
+            return {"detected_language": detected}
+        return {"detected_language": detected, "language": detected}
 
     # 비속어는 사용자가 실제로 입력한 원문에서 걸러야 합니다. (재작성 과정에서 순화될 수 있음)
-    keyword = match_abuse_keywords(state.get("query") or "")
+    keyword = match_abuse_keywords(original_query)
     if keyword:
         _log(deps).debug(f"비속어 사전 필터에 매칭되었습니다. (keyword={keyword})")
-        return {"intent": ChatIntent.ABUSE, "intent_error": False}
+        # 사전 필터로 끝내면 LLM 판정이 없으므로 언어는 표기 문자로 추정합니다.
+        return {"intent": ChatIntent.ABUSE, "intent_error": False, **resolved(None)}
 
     messages: list[dict] = [{"role": "system", "content": CLASSIFY_SYSTEM_PROMPT}]
     for sample_query, sample_label in CLASSIFY_FEW_SHOTS:
@@ -752,9 +986,23 @@ async def classify_intent(state: ChatGraphState, config: Optional[RunnableConfig
         )
     except Exception:
         _log(deps).warning("의도 분류 모델을 사용할 수 없어 검색 경로로 진행합니다.", exc_info=True)
-        return {"intent": ChatIntent.UNKNOWN, "intent_error": True, "service_unavailable": True}
+        return {
+            "intent": ChatIntent.UNKNOWN,
+            "intent_error": True,
+            "service_unavailable": True,
+            **resolved(None),
+        }
 
-    return {"intent": parse_intent(content), "intent_error": False}
+    intent, language = parse_intent_and_language(content)
+
+    # 응답이 비었다는 것은 "모호한 발화"가 아니라 모델이 라벨을 내지 못했다는 뜻입니다.
+    # (gemma-4-31b-it은 thinking을 끌 수 없어 상한이 빠듯하면 사고 과정만 내고 끝납니다)
+    # 이때 되묻기로 빠지면 멀쩡한 질문에 "구체적으로 말해 달라"고 답하게 되므로 검색을 시도합니다.
+    if not content.strip():
+        _log(deps).warning("의도·언어 분류 응답이 비어 있어 검색 경로로 진행합니다.")
+        return {"intent": ChatIntent.UNKNOWN, "intent_error": True, **resolved(None)}
+
+    return {"intent": intent, "intent_error": False, **resolved(language)}
 
 async def retrieve(state: ChatGraphState, config: Optional[RunnableConfig] = None) -> dict:
     """FAQ 지식베이스에서 근거를 검색합니다. (KAI-REQ-015)
@@ -932,7 +1180,7 @@ async def handle_abuse(state: ChatGraphState, config: Optional[RunnableConfig] =
 
     _deps(config)
     return {
-        "answer": app_config.chatbot.messages.abuse,
+        "answer": localized_message("abuse", state.get("language")),
         "needs_generation": False,
         "sources": [],
         "unanswered_reason": None,
@@ -943,7 +1191,7 @@ async def handle_ambiguous(state: ChatGraphState, config: Optional[RunnableConfi
 
     _deps(config)
     return {
-        "answer": app_config.chatbot.messages.ambiguous,
+        "answer": localized_message("ambiguous", state.get("language")),
         "needs_generation": False,
         "sources": [],
         "unanswered_reason": UnansweredReason.AMBIGUOUS,
@@ -954,7 +1202,7 @@ async def handle_fallback(state: ChatGraphState, config: Optional[RunnableConfig
 
     _deps(config)
     return {
-        "answer": app_config.chatbot.messages.fallback,
+        "answer": localized_message("fallback", state.get("language")),
         "needs_generation": False,
         "sources": [],
         "unanswered_reason": state.get("unanswered_reason") or UnansweredReason.NO_RESULT,
@@ -969,10 +1217,11 @@ async def handle_personal(state: ChatGraphState, config: Optional[RunnableConfig
 
     _deps(config)
 
-    answer = app_config.chatbot.messages.personal_data_unavailable
+    language = state.get("language")
+    answer = localized_message("personal_data_unavailable", language)
     links = _external_links_text()
     if links:
-        answer = f"{answer}\n\n아래 바로가기를 이용해 주세요.\n{links}"
+        answer = f"{answer}\n\n{_use_links_text(language)}\n{links}"
 
     return {
         "answer": answer,
@@ -1126,7 +1375,7 @@ async def run_chat_graph(
         query (str): 사용자 질문
         session_id (str): 세션 ID
         message_id (str): 사용자 메시지 ID
-        language (Optional[Language]): 응답 언어
+        language (Optional[Language]): 명시 지정된 응답 언어. None이면 발화에서 자동 감지합니다.
         history (list[dict]): 최근 대화 이력
         summary (Optional[str]): 세션 누적 요약
         message_count (int): 세션 메시지 수
@@ -1151,7 +1400,11 @@ async def run_chat_graph(
         "query_condensed": False,
         "session_id": session_id,
         "message_id": message_id,
+        # 자동이면 일단 서비스 기본값으로 두고 classify_intent가 감지 결과로 덮어씁니다.
+        # (분류 호출이 통째로 실패해도 language 키가 비어 있지 않도록 하기 위함)
         "language": language or Language.KO,
+        "language_explicit": language is not None,
+        "detected_language": None,
         "history": history or [],
         "summary": summary,
         "message_count": message_count,

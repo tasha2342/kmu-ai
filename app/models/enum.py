@@ -1,5 +1,7 @@
 from enum import Enum
 
+from typing import Optional
+
 
 class ModelProvider(str, Enum):
     """모델 제공자"""
@@ -291,6 +293,53 @@ class Language(str, Enum):
         json_schema = handler(core_schema)
         json_schema.update({
             "x-enumDescriptions": {
+                "ko": "한국어",
+                "en": "영어",
+                "zh": "중국어",
+                "vi": "베트남어",
+            }
+        })
+        return json_schema
+
+
+class ChatLanguage(str, Enum):
+    """대화 언어 선택 (KAI-REQ-029 다국어 지원)
+
+    `Language`에 "자동"을 더한 값 집합입니다. 별도 enum으로 둔 이유는, FAQ·규정처럼
+    **원문이 실제로 어느 언어로 쓰였는지**를 나타내는 곳(`Language`)에는 "자동"이라는 값이
+    존재할 수 없기 때문입니다. 자동은 "아직 정해지지 않았고 발화를 보고 정한다"는 뜻이라
+    대화 세션·요청에서만 의미가 있습니다.
+    """
+
+    AUTO = "auto"
+    """자동 감지 (사용자 발화의 언어를 판정해 그 언어로 답변)"""
+    KO = "ko"
+    """한국어"""
+    EN = "en"
+    """영어"""
+    ZH = "zh"
+    """중국어"""
+    VI = "vi"
+    """베트남어"""
+
+
+    def to_language(self) -> Optional[Language]:
+        """명시 지정된 응답 언어를 반환합니다. 자동이면 None입니다.
+
+        Returns:
+            Optional[Language]: 응답 언어 (자동이면 None)
+        """
+
+        if self == ChatLanguage.AUTO:
+            return None
+        return Language(self.value)
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema, handler):
+        json_schema = handler(core_schema)
+        json_schema.update({
+            "x-enumDescriptions": {
+                "auto": "자동 감지",
                 "ko": "한국어",
                 "en": "영어",
                 "zh": "중국어",

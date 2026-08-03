@@ -44,6 +44,7 @@ from app.models.api.exception import (
 from app.models.api.common import OrderBy
 from app.models.enum import (
     ChatIntent,
+    ChatLanguage,
     ChatRole,
     ChatSessionStatus,
     Language,
@@ -51,6 +52,7 @@ from app.models.enum import (
 )
 from app.utils.chat_graph import (
     get_retrieval_collection_name,
+    localized_message,
     run_chat_graph,
     update_session_summary,
 )
@@ -180,7 +182,7 @@ async def _get_session(db_manager: DatabaseManager, session_id: UUID) -> Optiona
 async def _create_session(
     db_manager: DatabaseManager,
     user_name: str,
-    language: Language,
+    language: ChatLanguage,
     title: Optional[str] = None,
     profile: Optional[dict] = None,
 ) -> db_items.ChatSession:
@@ -189,7 +191,7 @@ async def _create_session(
     Args:
         db_manager (DatabaseManager): 데이터베이스 매니저
         user_name (str): 사용자명
-        language (Language): 대화 언어
+        language (ChatLanguage): 대화 언어 (`auto`면 질문마다 감지)
         title (Optional[str]): 세션 제목 (Default: None)
         profile (Optional[dict]): 개인화 컨텍스트 (Default: None)
 
@@ -208,6 +210,36 @@ async def _create_session(
     )
     await db_manager.execute_query(query)
     return await _get_session(db_manager, session_id)
+
+def _resolve_language(
+    payload_language: Optional[ChatLanguage],
+    session_language: Optional[ChatLanguage],
+) -> Optional[Language]:
+    """이번 질문의 명시 지정 응답 언어를 결정합니다. (KAI-REQ-029)
+
+    사용자가 UI에서 언어를 고른 경우가 자동 감지보다 우선해야 하므로, 우선순위를
+    요청 → 세션 → 자동 순으로 둡니다. 요청이 `auto`를 명시하면 세션 설정까지 건너뛰고
+    자동으로 갑니다. 화면에서 "자동"을 고른 것 역시 사용자의 명시적 선택이기 때문입니다.
+
+    Args:
+        payload_language (Optional[ChatLanguage]): 요청에 실린 언어 (없으면 세션 설정을 따름)
+        session_language (Optional[ChatLanguage]): 세션에 저장된 언어
+
+    Returns:
+        Optional[Language]: 명시 지정된 응답 언어. None이면 발화에서 자동 감지합니다.
+    """
+
+    for candidate in (payload_language, session_language):
+        if candidate is None:
+            continue
+        if isinstance(candidate, str) and not isinstance(candidate, ChatLanguage):
+            try:
+                candidate = ChatLanguage(candidate)
+            except ValueError:
+                continue
+        return candidate.to_language()
+    return None
+
 
 async def _load_history(db_manager: DatabaseManager, session_id: UUID, limit: int) -> list[dict]:
     """프롬프트에 포함할 최근 대화 이력을 조회합니다. (KAI-REQ-016 문맥 유지)
@@ -262,8 +294,12 @@ async def _stream_answer(
         str: 응답 텍스트 조각
     """
 
+    # 정형 문구도 응답 언어를 따라야 합니다. 설정에는 한국어 한 벌만 있으므로
+    # chat_graph.localized_message가 언어별 문구를 골라 줍니다. (KAI-REQ-029)
+    language = state.get("language")
+
     if not state.get("needs_generation"):
-        yield state.get("answer") or config.chatbot.messages.fallback
+        yield state.get("answer") or localized_message("fallback", language)
         return
 
     outcome["model_name"] = config.chatbot.text_model
@@ -285,7 +321,8 @@ async def _stream_answer(
         logger.exception("챗봇 응답 생성 중 오류가 발생했습니다.")
         outcome["unanswered_reason"] = UnansweredReason.MODEL_ERROR
         outcome["failed"] = True
-        yield f"\n\n{config.chatbot.messages.fallback}" if emitted else config.chatbot.messages.fallback
+        fallback = localized_message("fallback", language)
+        yield f"\n\n{fallback}" if emitted else fallback
 
 async def _persist_turn(
     db_manager: DatabaseManager,
@@ -900,6 +937,8 @@ async def send_chat_message(
 ):
     started = util.get_now()
     notice: Optional[str] = None
+    # 미입력 자동 종료가 일어났는지 여부 (KAI-REQ-039). 안내 문구는 언어 판정 후에 만듭니다.
+    idle_closed = False
 
     # 세션 확인 또는 생성
     if payload.session_id:
@@ -937,7 +976,8 @@ async def send_chat_message(
 
             logger.info(f"미입력으로 대화 세션이 자동 종료되었습니다. (session_id={session.id})")
 
-            notice = config.chatbot.messages.idle_closed
+            # 안내 문구는 응답 언어를 판정한 뒤에 채웁니다. (그래프 실행 후 아래에서 설정)
+            idle_closed = True
             session = await _create_session(
                 db_manager=db_manager,
                 user_name=session.user_name,
@@ -948,10 +988,11 @@ async def send_chat_message(
         session = await _create_session(
             db_manager=db_manager,
             user_name=user_info.username,
-            language=payload.language or Language.KO,
+            language=payload.language or ChatLanguage.AUTO,
         )
 
-    language = payload.language or session.language
+    # 명시 지정이 없으면 None으로 두고 그래프가 발화에서 언어를 감지하게 합니다. (KAI-REQ-029)
+    language = _resolve_language(payload.language, session.language)
 
     # 최근 대화 이력 조회 (KAI-REQ-016)
     history = await _load_history(db_manager, session.id, config.chatbot.history_limit)
@@ -991,12 +1032,18 @@ async def send_chat_message(
         state = {
             "intent": ChatIntent.UNKNOWN,
             "sources": [],
-            "answer": config.chatbot.messages.fallback,
+            "answer": localized_message("fallback", language),
             "needs_generation": False,
             "unanswered_reason": UnansweredReason.MODEL_ERROR,
             "retrieval_attempted": False,
             "retrieval_latency_ms": 0,
+            "language": language or Language.KO,
         }
+
+    # 자동 감지 모드에서는 그래프가 판정한 언어가 이번 턴의 응답 언어입니다.
+    language = state.get("language") or language or Language.KO
+    if idle_closed:
+        notice = localized_message("idle_closed", language)
 
     assistant_message_id = uuid4()
     intent: ChatIntent = state.get("intent") or ChatIntent.UNKNOWN
@@ -1008,7 +1055,7 @@ async def send_chat_message(
         chunks: list[str] = []
         async for delta in _stream_answer(state, outcome, user_info, db_manager, logger):
             chunks.append(delta)
-        answer = "".join(chunks) or config.chatbot.messages.fallback
+        answer = "".join(chunks) or localized_message("fallback", language)
         answer = apply_masking(answer, masking_rules)
 
         latency_ms = int((util.get_now() - started).total_seconds() * 1000)
@@ -1074,7 +1121,7 @@ async def send_chat_message(
                     "data": _dumps({"message": "응답 생성 중 오류가 발생하여 안내 문구로 대체되었습니다."})
                 }
 
-            answer = "".join(chunks) or config.chatbot.messages.fallback
+            answer = "".join(chunks) or localized_message("fallback", language)
             answer = apply_masking(answer, masking_rules)
             latency_ms = int((util.get_now() - started).total_seconds() * 1000)
 
@@ -1117,7 +1164,8 @@ async def send_chat_message(
                         history=history,
                         state=state,
                         query_text=user_message,
-                        answer=apply_masking("".join(chunks) or config.chatbot.messages.fallback, masking_rules),
+                        answer=apply_masking(
+                            "".join(chunks) or localized_message("fallback", language), masking_rules),
                         user_message_id=user_message_id,
                         assistant_message_id=assistant_message_id,
                         outcome=outcome,

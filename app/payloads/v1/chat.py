@@ -2,7 +2,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.models.enum import ChatSessionStatus, Language
+from app.models.enum import ChatLanguage, ChatSessionStatus
 
 
 def _reject_null_bytes(value: Optional[str]) -> Optional[str]:
@@ -31,10 +31,14 @@ class CreateChatSessionPayload(BaseModel):
     )
 
     _no_null_title = field_validator("title")(_reject_null_bytes)
-    language: Language = Field(
-        Language.KO,
-        description="대화 언어입니다. 챗봇은 이 언어로 답변합니다. (KAI-REQ-029)",
-        examples=list(Language)
+    language: ChatLanguage = Field(
+        ChatLanguage.AUTO,
+        description=(
+            "대화 언어입니다. 챗봇은 이 언어로 답변합니다. (KAI-REQ-029)  \n"
+            "- **auto**(기본값): 질문마다 발화 언어를 감지해 그 언어로 답변합니다.  \n"
+            "- 그 외 값: 질문 언어와 무관하게 지정한 언어로만 답변합니다."
+        ),
+        examples=list(ChatLanguage)
     )
     profile: Optional[dict] = Field(
         None,
@@ -86,13 +90,15 @@ class SendChatMessagePayload(BaseModel):
         ),
         examples=["8c1d2e3f-4a5b-6c7d-8e9f-0a1b2c3d4e5f"]
     )
-    language: Optional[Language] = Field(
+    language: Optional[ChatLanguage] = Field(
         None,
         description=(
-            "이번 질문에 대한 응답 언어입니다.  \n"
-            "생략하면 세션에 설정된 언어를 사용합니다. (KAI-REQ-029)"
+            "이번 질문에 대한 응답 언어입니다. (KAI-REQ-029)  \n"
+            "- **auto**: 이번 질문의 언어를 감지해 그 언어로 답변합니다.  \n"
+            "- **ko/en/zh/vi**: 질문 언어와 무관하게 지정한 언어로 답변합니다. (자동 감지보다 우선)  \n"
+            "- 생략: 세션에 설정된 언어를 따릅니다."
         ),
-        examples=list(Language)
+        examples=list(ChatLanguage)
     )
     stream: bool = Field(
         True,

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { CHAT_SESSION_STATUS_LABEL, LANGUAGE_LABEL } from '../../lib/constants.js'
+import { CHAT_LANGUAGE_LABEL, CHAT_SESSION_STATUS_LABEL } from '../../lib/constants.js'
 import { formatRelative } from '../../lib/format.js'
 import { Button, EmptyState, ErrorNotice, Input, SkeletonRows } from '../../components/ui.jsx'
 
@@ -104,10 +104,11 @@ export default function ChatSessionList({
                         <span>{formatRelative(session.last_active_at)}</span>
                         <span>·</span>
                         <span>{session.message_count ?? 0}개</span>
-                        {session.language && session.language !== 'ko' && (
+                        {/* 기본값(자동 감지)과 한국어는 표시하지 않습니다. 모든 세션에 붙어 정보가 되지 않습니다. */}
+                        {session.language && session.language !== 'ko' && session.language !== 'auto' && (
                           <>
                             <span>·</span>
-                            <span>{LANGUAGE_LABEL[session.language] ?? session.language}</span>
+                            <span>{CHAT_LANGUAGE_LABEL[session.language] ?? session.language}</span>
                           </>
                         )}
                         {session.status && session.status !== 'active' && (

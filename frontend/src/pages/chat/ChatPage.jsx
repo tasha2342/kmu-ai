@@ -8,7 +8,7 @@ import { Button, ErrorNotice, InlineNotice, Select, Spinner } from '../../compon
 import { chatbot } from '../../lib/endpoints.js'
 import { streamChatMessage } from '../../lib/chatStream.js'
 import { useAuth } from '../../lib/useAuth.js'
-import { CHAT_INTENT_LABEL, LANGUAGES, SAMPLE_QUESTIONS } from '../../lib/constants.js'
+import { CHAT_INTENT_LABEL, DEFAULT_LANGUAGE, LANGUAGES, SAMPLE_QUESTIONS } from '../../lib/constants.js'
 import { formatMillis, formatRelative, formatTime } from '../../lib/format.js'
 
 /**
@@ -69,7 +69,8 @@ export default function ChatPage() {
   const [historyError, setHistoryError] = useState(null)
   const [historyLoading, setHistoryLoading] = useState(false)
 
-  const [language, setLanguage] = useState('ko')
+  // 'auto'면 서버가 질문의 언어를 감지해 그 언어로 답합니다. 직접 고른 언어는 감지보다 우선합니다.
+  const [language, setLanguage] = useState(DEFAULT_LANGUAGE)
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [sendError, setSendError] = useState(null)
@@ -137,7 +138,7 @@ export default function ChatPage() {
     setSendError(null)
     setNotice(null)
     setActiveId(target.id)
-    setLanguage(target.language ?? 'ko')
+    setLanguage(target.language ?? DEFAULT_LANGUAGE)
     setHistoryLoading(true)
     setHistoryError(null)
     try {

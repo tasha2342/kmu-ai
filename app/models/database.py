@@ -589,7 +589,7 @@ class ChatSession(BaseModel):
     복원하는 세션 기억(KAI-REQ-041)의 저장소입니다.
     """
 
-    from app.models.enum import ChatSessionStatus, Language
+    from app.models.enum import ChatLanguage, ChatSessionStatus
 
     id = UUIDField(primary_key=True, default=uuid.uuid4)
     """세션 ID"""
@@ -597,8 +597,12 @@ class ChatSession(BaseModel):
     """사용자명 (SSO 계정)"""
     title = CharField(max_length=255, null=True)
     """세션 제목 (첫 질문 기반 자동 생성)"""
-    language = EnumField(choices=list(Language), default=Language.KO)
-    """대화 언어"""
+    language = EnumField(choices=list(ChatLanguage), default=ChatLanguage.AUTO)
+    """대화 언어 (`auto`면 매 질문의 언어를 감지해 그 언어로 답변)
+
+    `Language`가 아니라 `ChatLanguage`를 쓰는 이유는 "자동"을 표현하기 위해서입니다.
+    컬럼은 varchar라 기존 행(`ko` 등)은 그대로 명시 지정으로 해석됩니다.
+    """
     status = EnumField(choices=list(ChatSessionStatus), default=ChatSessionStatus.ACTIVE, index=True)
     """세션 상태"""
     message_count = IntegerField(default=0)

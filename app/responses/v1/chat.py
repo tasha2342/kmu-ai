@@ -7,9 +7,9 @@ from pydantic import BaseModel, Field, field_serializer
 
 from app.models.enum import (
     ChatIntent,
+    ChatLanguage,
     ChatRole,
     ChatSessionStatus,
-    Language,
     UnansweredReason,
 )
 import app.models.db_item as db_items
@@ -34,10 +34,10 @@ class ChatSessionItem(BaseModel):
         description="세션 제목입니다.",
         examples=["수강신청 문의"]
     )
-    language: Language = Field(
-        Language.KO,
-        description="대화 언어입니다.",
-        examples=list(Language)
+    language: ChatLanguage = Field(
+        ChatLanguage.AUTO,
+        description="대화 언어입니다. (`auto`면 질문마다 언어를 감지해 답변)",
+        examples=list(ChatLanguage)
     )
     status: ChatSessionStatus = Field(
         ChatSessionStatus.ACTIVE,
