@@ -1,0 +1,20 @@
+# Directories
+configs/
+logs/
+static/
+tests/
+resources/
+
+.venv/
+__pycache__/
+
+# Files
+README.md
+Dockerfile*
+docker-compose.yml
+requirements.txt
+.DS_Store
+.gitignore
+.windsurfrules
+*.md
+*.pyc

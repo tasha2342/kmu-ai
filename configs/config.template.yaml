@@ -1,0 +1,80 @@
+# 데이터베이스 설정
+database:
+  db_type: postgresql # 데이터베이스 타입 (Options. postgresql)
+  host: localhost # 서버 IP
+  port: 5432 # 포트 번호
+  username: username # 사용자명
+  password: password # 사용자 비밀번호
+  name: template # 데이터베이스 이름
+  pool_min_connections: 1 # Connection Pool 최소 연결 수
+  pool_max_connections: 5 # Connection Pool 최대 연결 수
+  extensions: # PostgreSQL 확장 목록
+    - postgis # PostGIS 확장 활성화
+    - vector # pgvector 확장 활성화 (FAQ 지식베이스 임베딩 검색)
+# Redis 설정
+redis:
+  host: localhost
+  port: 6379
+# 사용자 인증 설정
+auth:
+  admin_roles: ["admin"] # 관리자 역할 목록
+  whitelist_domains: # 인증 패스 도메인 목록
+    - server.com
+  servers:
+    - alias: Auth Server # 인증 서버 별칭
+      server_url: https://auth-server.com # 인증 서버 주소
+      realm_name: kmu-ai # Realm 이름
+      client_id: kmu-ai-api # Client ID
+      client_secret_key: YOUR_CLIENT_SECRET_KEY # Client Secret Key
+      admin_username: admin # 관리자 사용자명
+      admin_password: password # 관리자 비밀번호
+# S3 설정
+s3:
+  endpoint: 192.168.0.1:9000 # S3 엔드포인트
+  access_key: admin # Access Key
+  secret_key: admin # Secret Key
+  secure: false # HTTPS 사용 여부
+  bucket_name: kmu-ai # 버킷 이름
+# Doc Parser 설정
+doc_parser:
+  api_url: http://192.168.0.100:9090/v1/document/parse # Doc Parser API URL
+  api_key: YOUR_API_KEY # API Key
+# Memgraph 설정 (GraphRAG)
+memgraph:
+  host: 192.168.0.110 # 서버 IP
+  port: 7687 # Bolt 포트 번호
+  username: null # 사용자명 (Optional)
+  password: null # 비밀번호 (Optional)
+  encrypted: false # SSL/TLS 사용 여부
+# 챗봇 설정 (계명대 기능정의서 KAI-REQ)
+chatbot:
+  text_model: kmu-chat # 응답 생성에 사용할 텍스트 생성 모델명 (models 테이블 등록명)
+  embedding_model: kmu-embedding # FAQ 지식베이스 임베딩 모델명
+  embedding_dim: 1024 # 임베딩 차원 (변경 시 컬럼/인덱스 재생성 + 전량 재색인 필요)
+  top_k: 5 # FAQ 검색 결과 수
+  score_threshold: 0.35 # 최소 유사도 점수 (미달 시 미응답으로 기록)
+  history_limit: 10 # 프롬프트에 포함할 최근 대화 메시지 수
+  # 프롬프트 길이 예산. 아래 합계가 text_model의 컨텍스트 상한 안에 들어와야 한다.
+  # (넘기면 응답 생성이 400 BadRequest로 실패하고 미응답 안내 문구로 대체된다)
+  evidence_max_chars: 12000 # [검색 근거] 블록 전체 상한
+  source_content_max_chars: 1500 # 근거 하나(규정 원문) 상한
+  history_max_chars: 6000 # 대화 이력 전체 상한 (최근 메시지 우선)
+  query_max_chars: 8000 # 사용자 질문 하나 상한
+  summary_trigger_count: 20 # 누적 요약을 갱신할 세션 메시지 수
+  # 미입력 자동 종료는 .env에서 설정한다. (ENABLE_SESSION_IDLE_TIMEOUT / SESSION_IDLE_TIMEOUT_MINUTES)
+  ingestion_job_timeout_minutes: 60 # 수집 작업을 실패로 간주하는 기준 시간(분)
+  abuse_keywords: [] # 비속어·목적 외 발화 사전 필터 키워드
+# 외부 서비스 연계 설정 (API Key 미발급 시 바로가기 링크만 안내)
+external_links:
+  - name: 워크넷
+    url: https://www.work24.go.kr
+    api_base: null # API Base URL (Optional)
+    api_key: null # API Key (Optional)
+  - name: 청년정책포털(온통청년)
+    url: https://www.youthcenter.go.kr
+    api_base: null
+    api_key: null
+  - name: 계명대 취업지원처
+    url: https://job.kmu.ac.kr
+    api_base: null
+    api_key: null

@@ -1,0 +1,69 @@
+{
+  "realm": "kmu-ai",
+  "enabled": true,
+  "sslRequired": "none",
+  "roles": {
+    "realm": [
+      { "name": "admin", "description": "관리자 역할 (FAQ·수집·통계·로그 관리)" },
+      { "name": "student", "description": "재학생 역할 (챗봇 대화 이용)" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "kmu-ai-api",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "kmu-ai-secret-key",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["http://localhost:8003/*", "http://192.168.0.146:8003/*"],
+      "webOrigins": ["*"]
+    },
+    {
+      "clientId": "kmu-ai-frontend",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["*"],
+      "webOrigins": ["*"]
+    }
+  ],
+  "users": [
+    {
+      "username": "jdone",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "jdone@kmu-ai.local",
+      "firstName": "Admin",
+      "lastName": "User",
+      "credentials": [
+        { "type": "password", "value": "jd@ne0707!", "temporary": false }
+      ],
+      "realmRoles": ["admin", "offline_access", "uma_authorization"],
+      "clientRoles": {
+        "realm-management": ["realm-admin"],
+        "account": ["manage-account"]
+      }
+    },
+    {
+      "username": "20241234",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "20241234@stu.kmu.ac.kr",
+      "firstName": "테스트",
+      "lastName": "학생",
+      "credentials": [
+        { "type": "password", "value": "kmu@test1!", "temporary": false }
+      ],
+      "realmRoles": ["student", "offline_access", "uma_authorization"],
+      "clientRoles": {
+        "account": ["manage-account"]
+      }
+    }
+  ]
+}

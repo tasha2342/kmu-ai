@@ -1,0 +1,130 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-gray-50 text-gray-900 antialiased;
+}
+
+/* 스크롤 영역이 화면을 가리지 않도록 얇은 스크롤바를 사용합니다. */
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: #cbd5e1;
+    border-radius: 9999px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+/* 챗봇 답변 마크다운 기본 서식 (타이포그래피 플러그인 없이 최소한만 정의) */
+.md-body > :first-child {
+  margin-top: 0;
+}
+.md-body > :last-child {
+  margin-bottom: 0;
+}
+.md-body p {
+  margin: 0.5rem 0;
+  line-height: 1.75;
+}
+.md-body ul,
+.md-body ol {
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
+}
+.md-body ul {
+  list-style: disc;
+}
+.md-body ol {
+  list-style: decimal;
+}
+.md-body li {
+  margin: 0.2rem 0;
+  line-height: 1.7;
+}
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4 {
+  margin: 0.9rem 0 0.4rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+.md-body h1 {
+  font-size: 1.1rem;
+}
+.md-body h2 {
+  font-size: 1.05rem;
+}
+.md-body h3,
+.md-body h4 {
+  font-size: 1rem;
+}
+.md-body a {
+  color: #0f4c96;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+.md-body code {
+  background: #eef2f7;
+  border-radius: 4px;
+  padding: 0.1rem 0.3rem;
+  font-size: 0.875em;
+}
+.md-body pre {
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 8px;
+  padding: 0.75rem;
+  overflow-x: auto;
+  margin: 0.6rem 0;
+}
+.md-body pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+.md-body blockquote {
+  border-left: 3px solid #c5dcf5;
+  padding-left: 0.75rem;
+  color: #475569;
+  margin: 0.6rem 0;
+}
+.md-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.6rem 0;
+  font-size: 0.9em;
+  display: block;
+  overflow-x: auto;
+}
+.md-body th,
+.md-body td {
+  border: 1px solid #e2e8f0;
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+}
+.md-body th {
+  background: #f1f5f9;
+  font-weight: 600;
+}
+.md-body hr {
+  border-color: #e2e8f0;
+  margin: 0.8rem 0;
+}
