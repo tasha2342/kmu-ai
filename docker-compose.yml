@@ -24,7 +24,15 @@ services:
       # 루트 파일시스템이 read_only라 캐시 경로는 쓰기 가능한 resources 볼륨으로 돌린다.
       HF_HOME: /app/resources/.cache/huggingface
       TORCH_HOME: /app/resources/.cache/torch
-      EMBEDDING_TORCH_THREADS: 16 # 임베딩 forward에 쓸 CPU 스레드 수 (호스트 64코어를 전부 잡지 않도록 제한)
+      # 임베딩 forward에 쓸 CPU 스레드 수. 워커 수 × 이 값이 호스트 코어 수를 넘지 않아야 한다.
+      # 넘기면 스레드 경합으로 임베딩이 수십 배 느려지고(4코어에서 16스레드 = 짧은 문장 하나에 108초),
+      # 이벤트 루프까지 굶어 DB 커넥션 획득이 타임아웃되면서 무관한 요청들이 503으로 떨어진다.
+      # 64코어 운영 호스트는 .env에서 16으로 올린다.
+      EMBEDDING_TORCH_THREADS: ${EMBEDDING_TORCH_THREADS:-2}
+      # gunicorn 워커 수. 워커마다 임베딩 모델을 자기 메모리에 따로 올리므로(KURE-v1 기준 약 2.2GB)
+      # 코어 수가 아니라 가용 메모리가 상한을 정한다. 개발 서버(4코어/3.8GB)는 1개가 한계다.
+      # 넉넉한 운영 호스트는 .env에서 올린다.
+      WORKERS: ${WORKERS:-1}
       # 미입력 세션 자동 종료 (.env로 설정, KAI-REQ-039)
       # 컨테이너는 .env를 직접 읽지 않으므로 여기서 명시적으로 전달해야 한다.
       ENABLE_SESSION_IDLE_TIMEOUT: ${ENABLE_SESSION_IDLE_TIMEOUT:-true}
