@@ -37,8 +37,16 @@ services:
     volumes:
       - ./static:/app/static:ro # 정적 파일 경로
       - ./configs:/app/configs:ro # 설정 경로
-      - ./resources:/app/resources # 리소스 경로
-      - /data2/models:/app/resources/models # 로컬 모델 가중치 경로 (호스트 /data2, pet-pass-one-node와 공유)
+      # 리소스 경로. 모델 가중치(resources/models/<org>--<name>)도 이 마운트에 포함된다.
+      - ./resources:/app/resources
+      # 원래 여기에 `/data2/models:/app/resources/models`가 있었다. (pet-pass-one-node와 가중치 공유용)
+      # 이 머신에는 /data2가 없어서 그대로 두면 도커가 root 소유 빈 디렉토리를 만들어 위 마운트 위에
+      # 덮어씌우고, 임베딩 가중치를 못 읽는다. (app/utils/embedder.py가 resources/models에서 읽는다)
+      # ./resources가 이미 /app/resources로 마운트되어 있으므로 ./resources/models를 따로 마운트하면
+      # 같은 경로를 두 번 마운트하는 꼴이 된다. 줄을 지우는 것이 가장 단순하고 안전하다.
+      # 가중치는 호스트의 ./resources/models/nlpai-lab--KURE-v1에 둔다.
+      # /data2가 있는 서버에 배포할 때만 아래 줄을 되살릴 것.
+      # - /data2/models:/app/resources/models
       - ./logs:/app/logs # 로그 경로
     networks:
       - jdone-network
@@ -88,10 +96,12 @@ services:
   keycloak: # kmu-ai 전용 Keycloak (다른 프로젝트 Keycloak과 별개)
     image: quay.io/keycloak/keycloak:25.0
     container_name: kmu-ai-keycloak
-    # realm은 관리자가 콘솔에서 직접 생성한다. (자동 import 비활성화)
-    # configs/keycloak-realm.json은 백엔드 설정(configs/config.yaml의 auth 블록)이 기대하는
-    # realm/client/역할 구조를 기록해 둔 참고용 파일이며, 자동으로 반영되지 않는다.
-    command: start-dev
+    # configs/keycloak-realm.json을 기동 시 자동 반영한다. 이 파일이 곧
+    # configs/config.yaml의 auth 블록이 기대하는 realm/client/역할 구조이므로,
+    # 손으로 만들면 어긋나기 쉽다. (client secret 하나만 달라도 인증이 통째로 실패한다)
+    # --import-realm은 realm이 이미 있으면 건너뛰므로 재기동에 안전하다.
+    # realm 정의를 바꾼 뒤 다시 반영하려면 keycloak-postgres-data 볼륨을 지워야 한다.
+    command: start-dev --import-realm
     restart: unless-stopped
     depends_on:
       keycloak-postgres:
@@ -109,6 +119,9 @@ services:
       KC_DB_URL_DATABASE: keycloak
       KC_DB_USERNAME: jdone
       KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+    volumes:
+      # --import-realm은 이 디렉토리 안의 *.json만 읽는다. 파일을 직접 마운트한다.
+      - ./configs/keycloak-realm.json:/opt/keycloak/data/import/kmu-ai-realm.json:ro
     ports:
       - 8082:8080 # kmu-ai 전용 Keycloak (호스트 8082 -> 컨테이너 8080)
     healthcheck:
