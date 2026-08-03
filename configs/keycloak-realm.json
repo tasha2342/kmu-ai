@@ -2,6 +2,25 @@
   "realm": "kmu-ai",
   "enabled": true,
   "sslRequired": "none",
+
+  "_comment_session": [
+    "세션 수명 설정. 기본값(유휴 30분)이면 탭을 잠깐 두고 자리를 비우기만 해도",
+    "SSO 세션이 죽어 refresh 토큰까지 무효가 되고 재로그인을 요구한다.",
+    "액세스 토큰은 5분으로 짧게 두되(탈취 시 피해를 줄인다) 프론트가 미리 갱신하고,",
+    "실제 로그인 유지 기간은 아래 SSO 세션 값으로 정한다."
+  ],
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 28800,
+  "ssoSessionMaxLifespan": 86400,
+
+  "_comment_remember_me": [
+    "로그인 화면의 '로그인 상태 유지'. 켜면 브라우저를 닫았다 열어도 유지된다.",
+    "체크한 사용자에게만 아래의 긴 수명이 적용된다."
+  ],
+  "rememberMe": true,
+  "ssoSessionIdleTimeoutRememberMe": 604800,
+  "ssoSessionMaxLifespanRememberMe": 2592000,
+
   "roles": {
     "realm": [
       { "name": "admin", "description": "관리자 역할 (FAQ·수집·통계·로그 관리)" },

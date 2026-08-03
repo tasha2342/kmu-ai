@@ -56,10 +56,65 @@ function write(session) {
     // 프라이빗 모드 등 localStorage 사용 불가 환경에서는 메모리 상태만 유지합니다.
   }
   cached = session
+  scheduleRefresh(session)
   listeners.forEach((fn) => fn(session))
 }
 
 let cached = read()
+
+// ===== 선제 토큰 갱신 =====
+
+/**
+ * 만료 몇 ms 전에 미리 갱신할지. 네트워크 왕복과 시계 오차를 감안한 여유입니다.
+ * 액세스 토큰 수명(5분)보다 충분히 작아야 합니다.
+ */
+const REFRESH_MARGIN_MS = 60_000
+
+let refreshTimer = null
+
+/**
+ * 액세스 토큰이 만료되기 전에 미리 갱신하도록 예약합니다.
+ *
+ * 401을 받고 나서 갱신하는 경로(`api.js`)만으로는 부족합니다. Keycloak의 SSO 세션은
+ * 유휴 시간(`ssoSessionIdleTimeout`)이 지나면 refresh 토큰까지 무효로 만들기 때문에,
+ * 탭을 열어둔 채 한동안 아무 요청도 하지 않으면 다음 요청에서 갱신조차 실패해
+ * 재로그인을 요구받습니다. 주기적으로 갱신해 두면 그 유휴 타이머도 함께 초기화됩니다.
+ *
+ * 실패는 여기서 처리하지 않습니다. 다음 요청이 401을 받아 재시도하거나 로그인으로 보냅니다.
+ */
+function scheduleRefresh(session) {
+  if (refreshTimer) {
+    clearTimeout(refreshTimer)
+    refreshTimer = null
+  }
+  // 직접 입력한 토큰에는 refresh_token이 없습니다. 갱신할 방법이 없으므로 예약하지 않습니다.
+  if (!session?.refresh_token || !session?.expires_at) return
+
+  const delay = Math.max(0, session.expires_at - Date.now() - REFRESH_MARGIN_MS)
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null
+    refreshAccessToken().catch(() => {})
+  }, delay)
+}
+
+// 새로고침 직후에도 저장소에서 복원한 세션에 갱신을 걸어 둡니다.
+scheduleRefresh(cached)
+
+if (typeof document !== 'undefined') {
+  // 백그라운드 탭에서는 브라우저가 타이머를 늦추거나 멈춥니다. 절전에서 깨어난 경우도
+  // 마찬가지여서, 화면으로 돌아왔을 때 남은 시간을 다시 보고 필요하면 즉시 갱신합니다.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return
+    const session = getSession()
+    if (!session?.refresh_token || !session?.expires_at) return
+
+    if (session.expires_at - Date.now() <= REFRESH_MARGIN_MS) {
+      refreshAccessToken().catch(() => {})
+    } else {
+      scheduleRefresh(session)
+    }
+  })
+}
 
 export function getSession() {
   return cached
