@@ -16,6 +16,10 @@ eggs/
 .eggs/
 lib/
 lib64/
+# 위 lib/은 파이썬 패키징 산출물을 걸러내려는 규칙인데, 프론트엔드 소스 디렉토리까지
+# 함께 제외해 버렸다. (frontend/src/lib의 api.js·endpoints.js 등 9개가 통째로 누락되어
+# 새로 클론하면 프론트 빌드가 실패했다) 해당 경로만 되살린다.
+!frontend/src/lib/
 parts/
 sdist/
 var/
