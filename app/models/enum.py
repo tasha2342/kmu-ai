@@ -273,6 +273,69 @@ class MaskingMethod(str, Enum):
         return json_schema
 
 
+class GuardrailDirection(str, Enum):
+    """가드레일 적용 방향"""
+
+    INPUT = "input"
+    """사용자 입력"""
+    OUTPUT = "output"
+    """챗봇 응답"""
+
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema, handler):
+        json_schema = handler(core_schema)
+        json_schema.update({
+            "x-enumDescriptions": {
+                "input": "사용자 입력",
+                "output": "챗봇 응답",
+            }
+        })
+        return json_schema
+
+
+class GuardrailMatchType(str, Enum):
+    """가드레일 매칭 방식"""
+
+    KEYWORD = "keyword"
+    """키워드 포함"""
+    REGEX = "regex"
+    """정규표현식"""
+
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema, handler):
+        json_schema = handler(core_schema)
+        json_schema.update({
+            "x-enumDescriptions": {
+                "keyword": "키워드 포함",
+                "regex": "정규표현식",
+            }
+        })
+        return json_schema
+
+
+class GuardrailAction(str, Enum):
+    """가드레일 조치"""
+
+    BLOCK = "block"
+    """차단 (안내 문구 반환)"""
+    REPLACE = "replace"
+    """치환"""
+
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema, handler):
+        json_schema = handler(core_schema)
+        json_schema.update({
+            "x-enumDescriptions": {
+                "block": "차단 (안내 문구 반환)",
+                "replace": "치환",
+            }
+        })
+        return json_schema
+
+
 # ===== 계명대 챗봇 (KAI-REQ) =====
 
 class Language(str, Enum):

@@ -28,6 +28,9 @@ from app.models.enum import (
     IngestionItemStatus,
     MaskingTargetField,
     MaskingMethod,
+    GuardrailDirection,
+    GuardrailMatchType,
+    GuardrailAction,
 )
 from app.models.cost import (
     TextGenerationCost,
@@ -1413,4 +1416,76 @@ class MaskingRule(BaseItem):
 
     @field_serializer("created_at", "updated_at")
     def serialize_datetime(value: datetime) -> Optional[str]:
+        return util.serialize_datetime(value)
+
+
+class Guardrail(BaseItem):
+    """입·출력 가드레일 규칙 아이템"""
+
+    id: UUID = Field(
+        ...,
+        description="규칙 ID입니다."
+    )
+    name: str = Field(
+        ...,
+        description="규칙명입니다.",
+        examples=["프롬프트 인젝션"]
+    )
+    direction: GuardrailDirection = Field(
+        ...,
+        description="적용 방향입니다.",
+        examples=list(GuardrailDirection)
+    )
+    match_type: GuardrailMatchType = Field(
+        ...,
+        description="매칭 방식입니다.",
+        examples=list(GuardrailMatchType)
+    )
+    pattern: str = Field(
+        ...,
+        description="키워드 또는 정규표현식입니다.",
+        examples=[r"(?i)jailbreak"]
+    )
+    action: GuardrailAction = Field(
+        ...,
+        description="조치입니다.",
+        examples=list(GuardrailAction)
+    )
+    response_message: Optional[str] = Field(
+        None,
+        description="차단 시 안내 문구입니다."
+    )
+    replacement: Optional[str] = Field(
+        None,
+        description="치환 문자열입니다.",
+        examples=["******-*******"]
+    )
+    description: Optional[str] = Field(
+        None,
+        description="설명입니다."
+    )
+    priority: int = Field(
+        100,
+        description="우선순위입니다. 낮을수록 먼저 적용됩니다.",
+        examples=[10, 20, 100]
+    )
+    is_active: bool = Field(
+        True,
+        description="활성 여부입니다.",
+        examples=[True, False]
+    )
+    created_at: datetime = Field(
+        ...,
+        description="생성 일시입니다.",
+        examples=[util.get_now()]
+    )
+    updated_at: datetime = Field(
+        ...,
+        description="수정 일시입니다.",
+        examples=[util.get_now()]
+    )
+
+
+    @field_serializer("created_at", "updated_at")
+    def serialize_guardrail_datetime(value: datetime) -> Optional[str]:
         return util.serialize_datetime(value)

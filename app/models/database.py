@@ -817,6 +817,42 @@ class MaskingRule(BaseModel):
         table_name = "masking_rules"
 
 
+class Guardrail(BaseModel):
+    """입·출력 가드레일(콘텐츠 필터) 규칙 테이블"""
+
+    from app.models.enum import GuardrailAction, GuardrailDirection, GuardrailMatchType
+
+    id = UUIDField(primary_key=True, default=uuid.uuid4)
+    """규칙 ID"""
+    name = CharField(max_length=255, index=True)
+    """규칙명"""
+    direction = EnumField(choices=list(GuardrailDirection), index=True)
+    """적용 방향 (입력/출력)"""
+    match_type = EnumField(choices=list(GuardrailMatchType), index=True)
+    """매칭 방식"""
+    pattern = TextField()
+    """키워드 또는 정규표현식"""
+    action = EnumField(choices=list(GuardrailAction), index=True)
+    """조치"""
+    response_message = TextField(null=True)
+    """차단 시 안내 문구"""
+    replacement = CharField(max_length=64, null=True)
+    """치환 문자열"""
+    description = TextField(null=True)
+    """설명"""
+    priority = IntegerField(default=100, index=True)
+    """우선순위 (낮을수록 먼저 적용)"""
+    is_active = BooleanField(default=True, index=True)
+    """활성 여부"""
+    created_at = DateTimeTZField(default=util.get_now, index=True)
+    """생성 일시"""
+    updated_at = DateTimeTZField(default=util.get_now)
+    """수정 일시"""
+
+    class Meta:
+        table_name = "guardrails"
+
+
 TABLES = [
     Model,
     ModelUsage,
@@ -840,4 +876,5 @@ TABLES = [
     IngestionJob,
     IngestionJobItem,
     MaskingRule,
+    Guardrail,
 ]

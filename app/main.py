@@ -19,6 +19,7 @@ from app.models.database import database_proxy
 from app.utils.limiter import limiter
 from app.utils.handlers import init_exception_handler, init_http_handler
 from app.utils.database import get_database, try_initialize_database, close_db_resources
+from app.utils.db_seed import seed_default_masking_and_guardrails
 from app.utils.logger import get_logger
 from app.utils.openapi import get_scalar_html
 from app.security.runtime_guard import enforce_runtime_guard
@@ -74,7 +75,9 @@ async def api_lifespan(app: FastAPI):
         
         # Database 준비 및 테이블 생성 (메인 프로세스 전용)
         try:
-            if not await try_initialize_database(create_tables=True):
+            if await try_initialize_database(create_tables=True):
+                await seed_default_masking_and_guardrails()
+            else:
                 logger.warning("Database를 사용할 수 없어 테이블 초기화를 건너뜁니다.")
         except Exception:
             logger.exception("Database 테이블 초기화 중 오류가 발생했습니다.")

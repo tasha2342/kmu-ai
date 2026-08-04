@@ -22,23 +22,25 @@ CREATE INDEX IF NOT EXISTS masking_rules_created_at ON masking_rules (created_at
 
 -- 목업 기본 규칙 (이미 있으면면 건너뜀)
 INSERT INTO masking_rules (
-    id, name, target_field, regex_pattern, masking_method, replacement, description, is_active
+    id, name, target_field, regex_pattern, masking_method, replacement, description, is_active, created_at, updated_at
 )
 SELECT
     'a1000000-0000-4000-8000-000000000001'::uuid,
     '학번',
     'student_id',
-    '^\d{8}$',
+    '(?<!\d)\d{8}(?!\d)',
     'partial',
     '****',
-    '학번 8자리 부분 마스킹',
-    true
+    '8자리 학번 부분 마스킹',
+    true,
+    NOW(),
+    NOW()
 WHERE NOT EXISTS (
     SELECT 1 FROM masking_rules WHERE id = 'a1000000-0000-4000-8000-000000000001'::uuid
 );
 
 INSERT INTO masking_rules (
-    id, name, target_field, regex_pattern, masking_method, replacement, description, is_active
+    id, name, target_field, regex_pattern, masking_method, replacement, description, is_active, created_at, updated_at
 )
 SELECT
     'a1000000-0000-4000-8000-000000000002'::uuid,
@@ -48,13 +50,15 @@ SELECT
     'middle',
     '****',
     '휴대폰 번호 중간 자리 마스킹',
-    true
+    true,
+    NOW(),
+    NOW()
 WHERE NOT EXISTS (
     SELECT 1 FROM masking_rules WHERE id = 'a1000000-0000-4000-8000-000000000002'::uuid
 );
 
 INSERT INTO masking_rules (
-    id, name, target_field, regex_pattern, masking_method, replacement, description, is_active
+    id, name, target_field, regex_pattern, masking_method, replacement, description, is_active, created_at, updated_at
 )
 SELECT
     'a1000000-0000-4000-8000-000000000003'::uuid,
@@ -64,13 +68,15 @@ SELECT
     'partial',
     '****',
     '이메일 로컬파트 부분 마스킹',
-    true
+    true,
+    NOW(),
+    NOW()
 WHERE NOT EXISTS (
     SELECT 1 FROM masking_rules WHERE id = 'a1000000-0000-4000-8000-000000000003'::uuid
 );
 
 INSERT INTO masking_rules (
-    id, name, target_field, regex_pattern, masking_method, replacement, description, is_active
+    id, name, target_field, regex_pattern, masking_method, replacement, description, is_active, created_at, updated_at
 )
 SELECT
     'a1000000-0000-4000-8000-000000000004'::uuid,
@@ -80,7 +86,9 @@ SELECT
     'full',
     '******-*******',
     '주민등록번호 전체 마스킹',
-    true
+    true,
+    NOW(),
+    NOW()
 WHERE NOT EXISTS (
     SELECT 1 FROM masking_rules WHERE id = 'a1000000-0000-4000-8000-000000000004'::uuid
 );
