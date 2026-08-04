@@ -13,6 +13,7 @@ app/
 ├── utils/
 │   ├── chat_graph.py       # 챗봇 오케스트레이션 (LangGraph). 의도 분류 -> 검색 -> 응답 -> 요약
 │   ├── litellm.py          # 모든 LLM 호출의 단일 통로
+│   ├── local_doc_parse.py  # Doc Parser 대체. HWP(rhwp)+PDF/DOCX/TXT 로컬 파싱
 │   ├── embedder.py         # 임베딩을 컨테이너 안에서 직접 실행 (GPU 노드로 안 나감)
 │   ├── node_client.py      # pet-pass-one-node 호출 (GPU 모델 실행/중지)
 │   └── vector_store.py, graphrag.py, memgraph.py
@@ -80,6 +81,9 @@ frontend/src/
   `chatbot.summary_trigger_count`마다 갱신됩니다.
 - 보조 LLM 호출(의도 분류·요약)은 `_complete()`를 씁니다. 스트리밍이 아니고,
   반환값에서 사고 과정을 제외한 `content`만 돌려줍니다.
+- **문서 파싱은 로컬**입니다 (`docs/local-document-parsing.md`). 외부 Doc Parser는 쓰지 않습니다.
+  HWP는 rhwp CLI → PDF → pypdfium2, 챗봇은 텍스트+페이지/표 이미지를 멀티모달로 넣습니다.
+  학칙 인제스트만 기존 pyhwp(`hwp_extractor`)를 유지합니다.
 
 ## 하지 말 것
 
@@ -90,12 +94,10 @@ frontend/src/
 
 ## 기동
 
-이 개발 환경에는 Docker가 없어 띄울 수 없습니다. Docker 있는 환경에서:
-
 ```bash
 cp configs/config.template.yaml configs/config.yaml   # 값 채우기
 cp configs/.env.template configs/.env
-docker-compose up -d --build
+docker compose up -d --build
 ```
 
 서비스: `kmu-ai-api`, `frontend`(nginx 정적 서빙), `postgres`, `redis`,

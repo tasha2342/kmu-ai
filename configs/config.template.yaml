@@ -7,7 +7,8 @@ database:
   password: password # 사용자 비밀번호
   name: template # 데이터베이스 이름
   pool_min_connections: 1 # Connection Pool 최소 연결 수
-  pool_max_connections: 5 # Connection Pool 최대 연결 수
+  # 챗봇 한 턴 + 스케줄러가 겹치면 5로는 풀 고갈 → 503/model_error가 난다. 20 권장.
+  pool_max_connections: 20 # Connection Pool 최대 연결 수
   extensions: # PostgreSQL 확장 목록
     - postgis # PostGIS 확장 활성화
     - vector # pgvector 확장 활성화 (FAQ 지식베이스 임베딩 검색)
@@ -35,10 +36,11 @@ s3:
   secret_key: minioadmin # Secret Key (MINIO_ROOT_PASSWORD, 8자 이상)
   secure: false # HTTPS 사용 여부
   bucket_name: kmu-ai # 버킷 이름
-# Doc Parser 설정
+# (Deprecated) 외부 Doc Parser — 로컬 파싱(app.utils.local_doc_parse)으로 대체되어 무시됩니다.
+# 기존 config.yaml 호환을 위해 키만 남겨 둡니다.
 doc_parser:
-  api_url: http://192.168.0.100:9090/v1/document/parse # Doc Parser API URL
-  api_key: YOUR_API_KEY # API Key
+  api_url: ""
+  api_key: null
 # Memgraph 설정 (GraphRAG)
 memgraph:
   host: 192.168.0.110 # 서버 IP
@@ -61,6 +63,8 @@ chatbot:
   history_max_chars: 6000 # 대화 이력 전체 상한 (최근 메시지 우선)
   query_max_chars: 8000 # 사용자 질문 하나 상한
   summary_trigger_count: 20 # 누적 요약을 갱신할 세션 메시지 수
+  attachment_image_max_pages: 4 # 챗봇 첨부 문서 멀티모달 페이지/표 이미지 상한
+  rhwp_timeout_seconds: 120 # HWP→PDF(rhwp) 타임아웃(초)
   # 미입력 자동 종료는 .env에서 설정한다. (ENABLE_SESSION_IDLE_TIMEOUT / SESSION_IDLE_TIMEOUT_MINUTES)
   ingestion_job_timeout_minutes: 60 # 수집 작업을 실패로 간주하는 기준 시간(분)
   # 비속어·목적 외 발화 사전 필터 키워드.

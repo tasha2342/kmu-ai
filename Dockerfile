@@ -73,30 +73,21 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
     git \
     fonts-noto-cjk \
-    # Playwright 의존성 패키지 - 필요 시 주석 해제 \
-    # libglib2.0-0 \
-    # libnspr4 \
-    # libnss3 \
-    # libdbus-1-3 \
-    # libatk1.0-0 \
-    # libatk-bridge2.0-0 \
-    # libcups2 \
-    # libxcb1 \
-    # libxkbcommon0 \
-    # libatspi2.0-0 \
-    # libx11-6 \
-    # libxcomposite1 \
-    # libxdamage1 \
-    # libxext6 \
-    # libxfixes3 \
-    # libxrandr2 \
-    # libgbm1 \
-    # libcairo2 \
-    # libpango-1.0-0 \
-    # libasound2 \
-    # TODO: 필요한 패키지 이 부분에 추가 \
+    ca-certificates \
+    curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# HWP/HWPX → PDF (로컬 문서 파싱). https://github.com/edwardkim/rhwp
+ARG RHWP_VERSION=v0.8.2
+RUN curl -fsSL \
+    "https://github.com/edwardkim/rhwp/releases/download/${RHWP_VERSION}/rhwp-${RHWP_VERSION}-linux-x86_64.tar.gz" \
+    -o /tmp/rhwp.tar.gz \
+    && tar -xzf /tmp/rhwp.tar.gz -C /tmp \
+    && install -m 0755 /tmp/rhwp/rhwp /usr/local/bin/rhwp \
+    && rm -rf /tmp/rhwp.tar.gz /tmp/rhwp \
+    && rhwp --help >/dev/null
+ENV RHWP_BIN=/usr/local/bin/rhwp
 
 # 의존성 설치 및 캐시 정리
 COPY --from=build-stage /tmp/requirements.txt .

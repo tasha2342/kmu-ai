@@ -15,7 +15,6 @@ from app.models.auth import TokenUserInfo
 from app.models.enum import (
     ChatIntent,
     Language,
-    ModelStatus,
     ModelType,
     ModelUsageStatus,
     SourceType,
@@ -30,6 +29,7 @@ from app.utils.litellm import (
     extract_token_counts,
     get_litellm_model_name,
     get_litellm_params,
+    get_running_model,
     save_usage,
 )
 from app.utils.logger import get_logger
@@ -653,11 +653,7 @@ async def complete_text(
         ValueError: 등록되지 않았거나 실행 중이 아닌 모델인 경우
     """
 
-    query = (db_models.Model.select().where(
-        (db_models.Model.name == model_name) &
-        (db_models.Model.status == ModelStatus.RUNNING.value)
-    ))
-    model: Optional[db_items.Model] = await db_manager.select_item(query)
+    model = await get_running_model(model_name, db_manager)
     if not model:
         raise ValueError(f"등록되지 않은 모델이거나 실행중이 아닙니다: model={model_name}")
 
@@ -791,6 +787,7 @@ def build_system_prompt(
     if has_attachments or intent == ChatIntent.DOCUMENT:
         rules.append(
             "사용자가 이번 질문에 첨부한 이미지·문서 내용을 우선 근거로 사용합니다. "
+            "첨부 텍스트와 함께 제공된 표/페이지 이미지가 있으면 둘을 함께 근거로 사용하세요. "
             "첨부에서 확인되는 내용만 사실로 답하고, 첨부·검색 근거에 없는 학사 정보는 지어내지 마세요. "
             "첨부만으로 답할 때는 FAQ 출처 표시가 없어도 됩니다."
         )

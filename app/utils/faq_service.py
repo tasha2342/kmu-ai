@@ -425,7 +425,8 @@ async def search_faq(
     if visibility:
         query = query.where(db_models.FaqEmbedding.visibility == visibility.value)
 
-    rows = await db_manager.execute_query(query)
+    # 벡터 검색은 임베딩 CPU 부하와 겹치면 기본 5초를 넘기기 쉽다.
+    rows = await db_manager.execute_query(query, timeout=30.0)
 
     results: list[FaqSearchResult] = []
     for row in rows:

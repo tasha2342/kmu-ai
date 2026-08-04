@@ -31,6 +31,38 @@ import app.utils.common as util
 logger = get_logger("litellm", log_dir="logs")
 
 
+# RUNNING 모델 조회 캐시. 챗봇 한 턴이 classify → generate로 같은 모델을 두 번 조회하는데,
+# 그 사이 검색이 DB 풀을 잡아먹으면 두 번째 조회가 503으로 실패해 model_error가 된다.
+_RUNNING_MODEL_CACHE_TTL_SEC = 60.0
+_running_model_cache: dict[str, tuple[float, "db_items.Model"]] = {}
+
+
+async def get_running_model(
+    model_name: str,
+    db_manager: DatabaseManager,
+    *,
+    use_cache: bool = True,
+) -> Optional[db_items.Model]:
+    """RUNNING 상태의 등록 모델을 조회합니다. 짧은 TTL 캐시로 반복 조회를 줄입니다."""
+
+    now = time.time()
+    if use_cache:
+        cached = _running_model_cache.get(model_name)
+        if cached and (now - cached[0]) < _RUNNING_MODEL_CACHE_TTL_SEC:
+            return cached[1]
+
+    query = (db_models.Model.select().where(
+        (db_models.Model.name == model_name) &
+        (db_models.Model.status == ModelStatus.RUNNING.value)
+    ))
+    model: Optional[db_items.Model] = await db_manager.select_item(query)
+    if model and use_cache:
+        _running_model_cache[model_name] = (now, model)
+    elif use_cache:
+        _running_model_cache.pop(model_name, None)
+    return model
+
+
 class ModelValidationResult(BaseModel):
     """모델 검증 결과"""
     
@@ -426,11 +458,7 @@ async def stream_chat_completion(
         ValueError: 등록되지 않았거나 실행 중이 아닌 모델인 경우
     """
 
-    query = (db_models.Model.select().where(
-        (db_models.Model.name == model_name) &
-        (db_models.Model.status == ModelStatus.RUNNING.value)
-    ))
-    model: Optional[db_items.Model] = await db_manager.select_item(query)
+    model = await get_running_model(model_name, db_manager)
     if not model:
         raise ValueError(f"등록되지 않은 모델이거나 실행중이 아닙니다: model={model_name}")
 

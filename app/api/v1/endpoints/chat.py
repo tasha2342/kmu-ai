@@ -50,12 +50,10 @@ from app.models.enum import (
     UnansweredReason,
 )
 from app.utils.chat_attachments import (
-    VISION_DOCUMENT_EXTENSIONS,
     ResolvedAttachment,
     attachments_to_storage,
     build_object_key,
     default_query_for_attachments,
-    extract_plain_text,
     file_extension,
     guess_kind,
     image_data_uri,
@@ -63,19 +61,19 @@ from app.utils.chat_attachments import (
     join_parsed_pages,
     new_attachment_id,
     owns_object_key,
-    pdf_pages_to_data_uris,
     resolve_mime,
     truncate_text,
 )
 from app.utils.chat_graph import (
     EMOTION_GENERATION_MAX_TOKENS,
+    _external_links_text,
     get_retrieval_collection_name,
     localized_message,
     run_chat_graph,
     update_session_summary,
 )
 from app.utils.database import DatabaseManager, get_db_manager
-from app.utils.doc_parser import parse_document
+from app.utils.local_doc_parse import parse_local_document
 from app.utils.litellm import stream_chat_completion
 from app.utils.logger import get_api_logger
 from app.utils.pii_mask import apply_masking, load_active_rules
@@ -349,7 +347,16 @@ async def _stream_answer(
         logger.exception("챗봇 응답 생성 중 오류가 발생했습니다.")
         outcome["unanswered_reason"] = UnansweredReason.MODEL_ERROR
         outcome["failed"] = True
-        fallback = localized_message("fallback", language)
+        # 취업 질문은 KB 없이도 외부 바로가기로 안내할 수 있다. 모델/DB 장애 때
+        # 학사 미응답 문구만 주면 "교내 취업 상담은 어디?" 같은 핵심 질문에 답이 비게 된다.
+        if intent == ChatIntent.CAREER:
+            links = _external_links_text()
+            fallback = (
+                "지금은 응답 생성에 잠시 문제가 있어, 취업 관련 바로가기만 안내드립니다.\n\n"
+                f"{links}"
+            ) if links else localized_message("fallback", language)
+        else:
+            fallback = localized_message("fallback", language)
         yield f"\n\n{fallback}" if emitted else fallback
 
 async def _persist_turn(
@@ -401,6 +408,8 @@ async def _persist_turn(
         search_query = apply_masking(search_query, masking_rules)
 
     # 챗봇 응답 메시지 저장
+    # 스트리밍 중 클라이언트가 끊기면 finally에서 같은 ID로 재저장을 시도한다.
+    # 본 경로가 메시지 insert 직후 후속 단계에서 실패하면 duplicate key가 나므로 무시한다.
     query = db_models.ChatMessage.insert(
         id=assistant_message_id,
         session_id=session.id,
@@ -412,7 +421,15 @@ async def _persist_turn(
         latency_ms=latency_ms,
         is_answered=is_answered,
     )
-    await db_manager.execute_query(query)
+    try:
+        await db_manager.execute_query(query)
+    except Exception as exc:
+        if "duplicate key" not in str(exc).lower() and "unique" not in str(exc).lower():
+            raise
+        logger.warning(
+            "챗봇 응답 메시지가 이미 저장되어 있어 재삽입을 건너뜁니다. "
+            f"(message_id={assistant_message_id})"
+        )
 
     # 검색 로그 저장 (KAI-REQ-043)
     if state.get("retrieval_attempted"):
@@ -926,38 +943,37 @@ async def _resolve_attachments(
             return None, "attachment_unavailable"
 
         ext = file_extension(item.file_name)
-        # PDF는 Doc Parser 텍스트 추출이 아니라 Gemma 비전(페이지 이미지)으로 넣는다.
-        if ext in VISION_DOCUMENT_EXTENSIONS:
-            try:
-                page_uris = await asyncio.to_thread(pdf_pages_to_data_uris, file_data)
-            except Exception:
-                logger.exception("PDF 페이지 렌더링에 실패했습니다.")
-                return None, "attachment_parse_failed"
-            if not page_uris:
-                return None, "attachment_parse_failed"
-            resolved.append(ResolvedAttachment(
-                attachment_id=item.attachment_id,
-                file_name=item.file_name,
-                file_type=item.file_type,
-                kind="document",
-                object_key=item.object_key,
-                size_bytes=item.size_bytes,
-                data_uris=page_uris,
-            ))
-            continue
+        if ext == "doc":
+            return None, "attachment_format_unsupported"
 
-        text = extract_plain_text(file_data, item.file_name) or ""
-        if not text:
-            # txt/md/PDF 이외(docx·hwp 등). Doc Parser가 없으면 비전용 PDF/이미지로 안내한다.
-            parsed = await parse_document(file_data, item.file_name)
-            text = join_parsed_pages(parsed)
-        if not text:
-            if ext in {"doc", "docx", "hwp", "hwpx"}:
-                return None, "attachment_format_unsupported"
+        # 로컬 파싱: 텍스트 + (챗용) 페이지/표 이미지
+        try:
+            parsed = await parse_local_document(file_data, item.file_name, for_chat=True)
+        except Exception:
+            logger.exception("첨부 문서 로컬 파싱에 실패했습니다.")
             return None, "attachment_parse_failed"
 
-        text = apply_masking(text, masking_rules)
-        text = truncate_text(text, evidence_limit)
+        if not parsed:
+            return None, "attachment_parse_failed"
+
+        text = join_parsed_pages({
+            "contents": parsed.contents,
+            "metadata": parsed.metadata,
+            "total_pages": parsed.total_pages,
+        })
+        page_uris = [
+            img["data_uri"]
+            for img in (parsed.page_images or [])
+            if img.get("data_uri")
+        ]
+
+        if not text and not page_uris:
+            return None, "attachment_parse_failed"
+
+        if text:
+            text = apply_masking(text, masking_rules)
+            text = truncate_text(text, evidence_limit)
+
         resolved.append(ResolvedAttachment(
             attachment_id=item.attachment_id,
             file_name=item.file_name,
@@ -965,7 +981,8 @@ async def _resolve_attachments(
             kind="document",
             object_key=item.object_key,
             size_bytes=item.size_bytes,
-            text=text,
+            text=text or None,
+            data_uris=page_uris or None,
         ))
 
     return resolved, None
@@ -975,8 +992,9 @@ async def _resolve_attachments(
     description=(
         "대화에 쓸 이미지·문서를 업로드합니다.  \n"
         "반환된 메타데이터를 `POST /v1/chatbot/message`의 `attachments`에 넣어 전송하면 "
-        "이미지는 멀티모달로, 문서는 파싱 텍스트로 모델에 전달됩니다.  \n"
-        "허용: png/jpg/jpeg/webp/gif, pdf/doc/docx/txt/hwp/hwpx/md. 파일당 최대 10MB."
+        "이미지는 멀티모달로, PDF·HWP·DOCX 등은 로컬 파싱 텍스트(+페이지/표 이미지)로 "
+        "모델에 전달됩니다.  \n"
+        "허용: png/jpg/jpeg/webp/gif, pdf/docx/txt/hwp/hwpx/md (.doc 미지원). 파일당 최대 10MB."
     ),
     responses={
         200: {"description": "업로드된 첨부 메타데이터입니다.", "model": ChatAttachment},

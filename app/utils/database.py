@@ -78,6 +78,13 @@ class DatabaseManager(Manager):
             return await self.wait_for_result(db_task, timeout=timeout)
         except (InterfaceError, OperationalError, psycopg2.OperationalError, asyncio.TimeoutError) as exc:
             logger.exception("데이터베이스 쿼리 실행 중 오류가 발생했습니다.")
+            # wait_for 타임아웃은 진행 중 쿼리를 cancel한다. 이때 커넥션이 풀로
+            # 바로 안 돌아가면 이후 요청이 연쇄 503이 되므로 풀을 한 번 비운다.
+            if isinstance(exc, asyncio.TimeoutError):
+                try:
+                    await self.database._reconnect_pool()
+                except Exception:
+                    logger.warning("타임아웃 후 DB 풀 재연결에 실패했습니다.", exc_info=True)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=DATABASE_UNAVAILABLE_MESSAGE,

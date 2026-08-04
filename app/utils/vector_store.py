@@ -42,6 +42,13 @@ UPSERT_BATCH_SIZE = 100
 BULK_QUERY_TIMEOUT = 60.0
 """대량 저장·삭제 쿼리의 타임아웃(초). 기본 5초로는 수백 개 청크 저장이 중간에 끊깁니다."""
 
+SEARCH_QUERY_TIMEOUT = 30.0
+"""벡터·hybrid 검색 쿼리 타임아웃(초).
+
+기본 5초는 임베딩 CPU 부하·스왑이 겹칠 때 HNSW 검색이 넘기기 쉽고, 타임아웃이
+풀 고갈로 번지면 같은 턴의 응답 생성(모델 조회)까지 503이 난다.
+"""
+
 
 # ===== hybrid 검색 상수 =====
 #
@@ -604,7 +611,7 @@ class VectorStoreManager:
 
         query = self._apply_filter_conditions(query, model, filter_conditions)
 
-        rows = await db_manager.execute_query(query)
+        rows = await db_manager.execute_query(query, timeout=SEARCH_QUERY_TIMEOUT)
 
         results = []
         for row in rows:
@@ -683,7 +690,7 @@ class VectorStoreManager:
                        .order_by(distance)
                        .limit(candidate_limit))
         dense_query = self._apply_filter_conditions(dense_query, model, filter_conditions)
-        dense_rows = await db_manager.execute_query(dense_query)
+        dense_rows = await db_manager.execute_query(dense_query, timeout=SEARCH_QUERY_TIMEOUT)
 
         # 2) 어휘 후보
         match_expression, rank = self._lexical_expressions(model, query_text or "")
@@ -694,7 +701,7 @@ class VectorStoreManager:
                          .order_by(rank.desc())
                          .limit(candidate_limit))
         lexical_query = self._apply_filter_conditions(lexical_query, model, filter_conditions)
-        lexical_rows = await db_manager.execute_query(lexical_query)
+        lexical_rows = await db_manager.execute_query(lexical_query, timeout=SEARCH_QUERY_TIMEOUT)
 
         # 3) 후보 payload 수집 (같은 청크가 양쪽에 나오므로 ID로 합칩니다.)
         payloads: dict[str, dict[str, Any]] = {}

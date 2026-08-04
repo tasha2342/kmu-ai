@@ -149,12 +149,16 @@ class S3Config(BaseModel):
 
 
 class DocParserConfig(BaseModel):
-    """Doc Parser 관련 설정 클래스"""
-    
-    api_url: str
-    """Doc Parser API URL"""
+    """(Deprecated) 과거 외부 Doc Parser API 설정.
+
+    문서는 `app.utils.local_doc_parse`로 로컬 파싱합니다. 이 블록은 기존 config.yaml
+    호환을 위해 남겨 두며 런타임에서 사용하지 않습니다.
+    """
+
+    api_url: str = ""
+    """(미사용) 과거 Doc Parser API URL"""
     api_key: Optional[str] = None
-    """API Key"""
+    """(미사용) 과거 API Key"""
 
 
 class MemgraphConfig(BaseModel):
@@ -212,10 +216,10 @@ class ChatbotMessagesConfig(BaseModel):
     )
     """문서 파싱 실패 안내 문구"""
     attachment_format_unsupported: str = (
-        "이 파일 형식(docx/hwp 등)은 아직 직접 읽을 수 없습니다. "
-        "PDF 또는 이미지로 저장한 뒤 다시 첨부해 주세요."
+        "이 파일 형식(.doc)은 아직 직접 읽을 수 없습니다. "
+        "DOCX·PDF·HWP로 저장하거나 이미지로 첨부해 주세요."
     )
-    """비전으로 바로 넣을 수 없는 문서 형식 안내"""
+    """legacy .doc 등 로컬 파서 미지원 형식 안내"""
     attachment_unavailable: str = (
         "첨부 파일을 불러오지 못했습니다. 파일을 다시 업로드한 뒤 질문해 주세요."
     )
@@ -282,6 +286,10 @@ class ChatbotConfig(BaseModel):
     실제 사람에게 연결될 통로를 함께 알려야 합니다. 학교마다 창구가 달라 코드에 두지 않고
     설정으로 받습니다. 비워 두면 상담 연결 안내 없이 공감만 수행합니다.
     """
+    attachment_image_max_pages: int = 4
+    """챗봇 첨부 문서에서 멀티모달로 넣을 최대 페이지(또는 DOCX 표) 이미지 수"""
+    rhwp_timeout_seconds: int = 120
+    """HWP/HWPX → PDF 변환(rhwp export-pdf) 타임아웃(초)"""
     messages: ChatbotMessagesConfig = ChatbotMessagesConfig()
     """안내 문구 설정"""
 
@@ -314,8 +322,8 @@ class Config(BaseModel):
     """사용자 인증 관련 설정"""
     s3: S3Config
     """S3 관련 설정"""
-    doc_parser: DocParserConfig
-    """Doc Parser 관련 설정"""
+    doc_parser: DocParserConfig = DocParserConfig()
+    """(Deprecated) 과거 Doc Parser 설정. 로컬 파싱으로 대체되어 무시됩니다."""
     memgraph: MemgraphConfig
     """Memgraph 관련 설정 (GraphRAG)"""
     chatbot: ChatbotConfig
