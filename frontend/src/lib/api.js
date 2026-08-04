@@ -65,7 +65,15 @@ async function send(path, method, headers, body, rest) {
  * CORS 설정 없이 동일 출처로 통신합니다.
  * 토큰은 authStore 한 곳에서만 관리하며, 401을 받으면 한 번 갱신 후 재시도합니다.
  */
-export async function apiFetch(path, { method = 'GET', body, auth = true, formData, ...rest } = {}) {
+export async function apiFetch(path, {
+  method = 'GET',
+  body,
+  auth = true,
+  formData,
+  timeoutMs,
+  signal,
+  ...rest
+} = {}) {
   const headers = { ...rest.headers }
   if (body !== undefined && !formData) headers['Content-Type'] = 'application/json'
   if (auth) {
@@ -73,49 +81,78 @@ export async function apiFetch(path, { method = 'GET', body, auth = true, formDa
     if (token) headers['Authorization'] = `Bearer ${token}`
   }
 
-  let response
-  try {
-    response = await fetch(`/v1${path}`, {
-      method,
-      headers,
-      body: formData ? formData : body !== undefined ? JSON.stringify(body) : undefined,
-      ...rest,
-    })
-  } catch (error) {
-    if (error?.name === 'AbortError') throw error
-    throw new NetworkError(error)
-  }
+  // 호출측 AbortSignal과 타임아웃을 합친다. 업로드가 무한히 '업로드 중…'에 남지 않게 한다.
+  const timeoutController = typeof timeoutMs === 'number' && timeoutMs > 0 ? new AbortController() : null
+  const timeoutId = timeoutController
+    ? setTimeout(() => timeoutController.abort(), timeoutMs)
+    : null
+  const combinedSignal = mergeAbortSignals(signal, timeoutController?.signal)
 
-  if (response.status === 401 && auth) {
-    const refreshed = await refreshAccessToken()
-    if (refreshed?.access_token) {
-      headers['Authorization'] = `Bearer ${refreshed.access_token}`
-      try {
-        response = await fetch(`/v1${path}`, {
-          method,
-          headers,
-          body: formData ? formData : body !== undefined ? JSON.stringify(body) : undefined,
-          ...rest,
-        })
-      } catch (error) {
-        if (error?.name === 'AbortError') throw error
-        throw new NetworkError(error)
+  const doFetch = async (fetchHeaders) => {
+    try {
+      return await fetch(`/v1${path}`, {
+        method,
+        headers: fetchHeaders,
+        body: formData ? formData : body !== undefined ? JSON.stringify(body) : undefined,
+        ...rest,
+        signal: combinedSignal,
+      })
+    } catch (error) {
+      if (error?.name === 'AbortError') {
+        if (timeoutController?.signal?.aborted && !signal?.aborted) {
+          throw new ApiError(0, null, '요청 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.')
+        }
+        throw error
       }
+      throw new NetworkError(error)
     }
   }
 
-  let data = null
   try {
-    data = await response.json()
-  } catch {
-    data = null
-  }
+    let response = await doFetch(headers)
 
-  if (!response.ok) {
-    throw new ApiError(response.status, data, defaultMessageFor(response.status))
-  }
+    if (response.status === 401 && auth) {
+      const refreshed = await refreshAccessToken()
+      if (refreshed?.access_token) {
+        headers['Authorization'] = `Bearer ${refreshed.access_token}`
+        response = await doFetch(headers)
+      }
+    }
 
-  return data
+    let data = null
+    try {
+      data = await response.json()
+    } catch {
+      data = null
+    }
+
+    if (!response.ok) {
+      throw new ApiError(response.status, data, defaultMessageFor(response.status))
+    }
+
+    return data
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId)
+  }
+}
+
+/** 여러 AbortSignal 중 하나라도 abort되면 같이 중단되는 signal을 만듭니다. */
+function mergeAbortSignals(...signals) {
+  const active = signals.filter(Boolean)
+  if (active.length === 0) return undefined
+  if (active.length === 1) return active[0]
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.any === 'function') {
+    return AbortSignal.any(active)
+  }
+  const controller = new AbortController()
+  for (const item of active) {
+    if (item.aborted) {
+      controller.abort(item.reason)
+      return controller.signal
+    }
+    item.addEventListener('abort', () => controller.abort(item.reason), { once: true })
+  }
+  return controller.signal
 }
 
 function defaultMessageFor(status) {

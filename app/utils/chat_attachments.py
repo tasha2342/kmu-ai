@@ -23,8 +23,18 @@ MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 MAX_ATTACHMENTS_PER_MESSAGE = 5
 """메시지당 최대 첨부 개수"""
 
+MAX_PDF_VISION_PAGES = 8
+"""PDF를 비전으로 넣을 때 렌더링할 최대 페이지 수 (컨텍스트 예산)"""
+
+PDF_RENDER_SCALE = 1.5
+"""PDF 페이지 → PNG 배율. 1.5 ≈ 108dpi 수준으로 OCR·레이아웃 인식에 충분하다."""
+
 IMAGE_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "webp", "gif"})
 DOCUMENT_EXTENSIONS = frozenset({"pdf", "doc", "docx", "txt", "hwp", "hwpx", "md"})
+"""업로드 허용 문서 확장자"""
+
+VISION_DOCUMENT_EXTENSIONS = frozenset({"pdf"})
+"""텍스트 추출 없이 페이지 이미지로 Gemma에 넘기는 문서 확장자"""
 
 IMAGE_MIMES = frozenset({
     "image/png",
@@ -71,7 +81,10 @@ _UNSAFE_NAME_RE = re.compile(r"[^\w.\-()+\u3130-\u318F\uAC00-\uD7A3]+", re.UNICO
 class ResolvedAttachment:
     """모델 입력용으로 해석된 첨부입니다.
 
-    이미지면 `data_uri`, 문서면 `text`가 채워집니다. DB에는 넣지 않습니다.
+    - 이미지: `data_uri`
+    - PDF: `data_uris` (페이지 PNG). Gemma는 문서/PDF를 비전으로 읽는다.
+    - txt/md 등: `text`
+    DB에는 넣지 않습니다.
     """
 
     attachment_id: str
@@ -81,6 +94,7 @@ class ResolvedAttachment:
     object_key: str
     size_bytes: Optional[int] = None
     data_uri: Optional[str] = None
+    data_uris: Optional[list[str]] = None
     text: Optional[str] = None
 
 
@@ -187,6 +201,65 @@ def join_parsed_pages(parsed: Optional[dict[str, Any]]) -> str:
     return "\n\n".join(part for part in parts if part).strip()
 
 
+def extract_plain_text(file_data: bytes, file_name: str) -> Optional[str]:
+    """평문(txt/md)만 디코딩합니다. PDF는 비전 경로(`pdf_pages_to_data_uris`)를 씁니다."""
+
+    ext = file_extension(file_name)
+    if ext not in {"txt", "md"}:
+        return None
+    if not file_data:
+        return None
+    for encoding in ("utf-8", "utf-8-sig", "cp949", "euc-kr", "latin-1"):
+        try:
+            text = file_data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        text = text.replace("\x00", "").strip()
+        return text or None
+    return None
+
+
+def pdf_pages_to_data_uris(
+    file_data: bytes,
+    *,
+    max_pages: int = MAX_PDF_VISION_PAGES,
+    scale: float = PDF_RENDER_SCALE,
+) -> list[str]:
+    """PDF 페이지를 PNG data URI로 렌더링합니다.
+
+    Gemma 4의 Document/PDF 이해는 비전 경로다. 외부 Doc Parser로 텍스트를 뽑지 않고
+    페이지 이미지를 `image_url`로 넣어 모델이 직접 읽게 한다.
+    """
+
+    if not file_data:
+        return []
+
+    import pypdfium2 as pdfium
+
+    uris: list[str] = []
+    pdf = pdfium.PdfDocument(file_data)
+    try:
+        page_count = len(pdf)
+        if page_count <= 0:
+            return []
+        limit = min(page_count, max(1, max_pages))
+        for index in range(limit):
+            page = pdf[index]
+            try:
+                bitmap = page.render(scale=scale)
+                pil_image = bitmap.to_pil()
+            finally:
+                page.close()
+            from io import BytesIO
+
+            buf = BytesIO()
+            pil_image.save(buf, format="PNG", optimize=True)
+            uris.append(image_data_uri("image/png", buf.getvalue()))
+    finally:
+        pdf.close()
+    return uris
+
+
 def truncate_text(text: Optional[str], limit: int, marker: str = " …(이하 생략)") -> str:
     """길이 예산으로 텍스트를 자릅니다."""
 
@@ -226,7 +299,8 @@ def build_user_content(
 ) -> Union[str, list[dict]]:
     """최종 LLM user 메시지 content를 조립합니다.
 
-    이미지가 있으면 OpenAI 호환 multimodal list, 아니면 문자열을 반환합니다.
+    이미지·PDF 페이지가 있으면 OpenAI 호환 multimodal list, 아니면 문자열을 반환합니다.
+    Gemma 권장대로 이미지(문서 페이지)를 텍스트보다 앞에 둡니다.
     """
 
     query_text = truncate_text((query or "").strip(), query_max_chars)
@@ -236,13 +310,18 @@ def build_user_content(
     image_parts: list[dict] = []
 
     for item in resolved:
-        if item.kind == "document" and item.text:
-            document_blocks.append(f"[첨부 문서: {item.file_name}]\n{item.text}")
-        elif item.kind == "image" and item.data_uri:
+        page_uris = list(item.data_uris or [])
+        if item.data_uri:
+            page_uris.insert(0, item.data_uri)
+        for uri in page_uris:
             image_parts.append({
                 "type": "image_url",
-                "image_url": {"url": item.data_uri},
+                "image_url": {"url": uri},
             })
+        if item.kind == "document" and item.text:
+            document_blocks.append(f"[첨부 문서: {item.file_name}]\n{item.text}")
+        elif item.kind == "document" and page_uris and not item.text:
+            document_blocks.append(f"[첨부 문서: {item.file_name}] (아래 페이지 이미지를 참고하세요)")
 
     text_sections: list[str] = []
     if document_blocks:
@@ -259,10 +338,10 @@ def build_user_content(
     if not image_parts:
         return text_body
 
-    parts: list[dict] = [{"type": "text", "text": text_body or "첨부한 이미지를 확인해 주세요."}]
-    parts.extend(image_parts)
+    # Gemma: 이미지/문서 페이지를 텍스트보다 앞에 두는 편이 인식이 안정적이다.
+    parts: list[dict] = list(image_parts)
+    parts.append({"type": "text", "text": text_body or "첨부한 이미지를 확인해 주세요."})
     return parts
-
 
 def default_query_for_attachments(message: str) -> str:
     """첨부만 있고 질문이 비어 있을 때 그래프에 넣을 기본 질문입니다."""

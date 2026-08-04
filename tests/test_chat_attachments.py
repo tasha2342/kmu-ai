@@ -11,6 +11,7 @@ from app.utils.chat_attachments import (
     build_object_key,
     build_user_content,
     default_query_for_attachments,
+    extract_plain_text,
     guess_kind,
     image_data_uri,
     is_allowed_upload,
@@ -109,14 +110,32 @@ def test_image_data_uri_and_user_content():
     ]
     multi = build_user_content("이게 뭐야?", images)
     assert isinstance(multi, list)
-    assert multi[0]["type"] == "text"
-    assert "이게 뭐야?" in multi[0]["text"]
-    assert multi[1]["type"] == "image_url"
-    assert multi[1]["image_url"]["url"] == uri
+    # Gemma: 이미지를 텍스트보다 앞에 둔다.
+    assert multi[0]["type"] == "image_url"
+    assert multi[0]["image_url"]["url"] == uri
+    assert multi[-1]["type"] == "text"
+    assert "이게 뭐야?" in multi[-1]["text"]
 
     only_image = build_user_content("", images)
     assert isinstance(only_image, list)
-    assert "첨부한" in only_image[0]["text"] or "설명" in only_image[0]["text"]
+    assert only_image[0]["type"] == "image_url"
+    assert "첨부한" in only_image[-1]["text"] or "설명" in only_image[-1]["text"]
+
+    pdf_pages = [
+        ResolvedAttachment(
+            attachment_id="3",
+            file_name="resume.pdf",
+            file_type="application/pdf",
+            kind="document",
+            object_key="k3",
+            data_uris=[uri, uri],
+        )
+    ]
+    pdf_content = build_user_content("피드백 해줘", pdf_pages)
+    assert isinstance(pdf_content, list)
+    assert sum(1 for part in pdf_content if part["type"] == "image_url") == 2
+    assert pdf_content[-1]["type"] == "text"
+    assert "피드백" in pdf_content[-1]["text"]
 
 
 def test_default_query_and_storage():
@@ -140,3 +159,10 @@ def test_resolve_mime_fallback():
     assert resolve_mime("a.png", "image/png") == "image/png"
     assert resolve_mime("a.webp", "application/octet-stream") == "image/webp"
     assert resolve_mime("doc.pdf", None) == "application/pdf"
+
+
+def test_extract_plain_text_for_txt_md_only():
+    assert extract_plain_text("안녕하세요".encode("utf-8"), "note.txt") == "안녕하세요"
+    assert extract_plain_text("# 제목\n본문".encode("utf-8"), "a.md") == "# 제목\n본문"
+    assert extract_plain_text("hello".encode("utf-8"), "a.pdf") is None
+    assert extract_plain_text(b"", "a.txt") is None

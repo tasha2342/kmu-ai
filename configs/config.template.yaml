@@ -28,11 +28,11 @@ auth:
       client_secret_key: YOUR_CLIENT_SECRET_KEY # Client Secret Key
       admin_username: admin # 관리자 사용자명
       admin_password: password # 관리자 비밀번호
-# S3 설정
+# S3 설정 (docker-compose의 minio 서비스. 컨테이너망에서는 kmu-ai-minio:9000)
 s3:
-  endpoint: 192.168.0.1:9000 # S3 엔드포인트
-  access_key: admin # Access Key
-  secret_key: admin # Secret Key
+  endpoint: kmu-ai-minio:9000 # S3 엔드포인트
+  access_key: minioadmin # Access Key (MINIO_ROOT_USER)
+  secret_key: minioadmin # Secret Key (MINIO_ROOT_PASSWORD, 8자 이상)
   secure: false # HTTPS 사용 여부
   bucket_name: kmu-ai # 버킷 이름
 # Doc Parser 설정

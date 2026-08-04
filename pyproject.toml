@@ -44,6 +44,9 @@ dependencies = [
     # 이미지가 2GB 넘게 불어난다. CPU 전용 휠을 Dockerfile에서 PyTorch 인덱스로 직접 설치한다.
     "transformers>=4.57.0",
     "python-multipart>=0.0.22",
+    # 챗봇 PDF 첨부를 Gemma 비전 입력(페이지 이미지)으로 넘기기 위해 렌더링
+    "pypdfium2>=4.30.0",
+    "pillow>=10.0.0",
     # 챗봇 오케스트레이션 (의도 분류 -> 검색 -> 생성 그래프)
     "langgraph>=0.6.0",
     "langgraph-checkpoint-postgres>=2.0.0",

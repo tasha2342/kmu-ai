@@ -211,6 +211,11 @@ class ChatbotMessagesConfig(BaseModel):
         "다른 파일로 다시 시도해 주세요."
     )
     """문서 파싱 실패 안내 문구"""
+    attachment_format_unsupported: str = (
+        "이 파일 형식(docx/hwp 등)은 아직 직접 읽을 수 없습니다. "
+        "PDF 또는 이미지로 저장한 뒤 다시 첨부해 주세요."
+    )
+    """비전으로 바로 넣을 수 없는 문서 형식 안내"""
     attachment_unavailable: str = (
         "첨부 파일을 불러오지 못했습니다. 파일을 다시 업로드한 뒤 질문해 주세요."
     )

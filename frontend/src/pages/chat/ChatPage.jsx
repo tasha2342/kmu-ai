@@ -29,6 +29,8 @@ const RESUME_MAX_IDLE_MINUTES = 12 * 60
 
 const MAX_ATTACHMENTS = 5
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+/** 첨부 업로드 fetch 타임아웃. 넘기면 '업로드 중…'에 고정되지 않고 오류로 풀린다. */
+const ATTACHMENT_UPLOAD_TIMEOUT_MS = 60_000
 const ATTACHMENT_ACCEPT =
   '.png,.jpg,.jpeg,.webp,.gif,.pdf,.doc,.docx,.txt,.hwp,.hwpx,.md,image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain,text/markdown'
 
@@ -345,7 +347,13 @@ export default function ChatPage() {
         const formData = new FormData()
         formData.append('file', file)
         try {
-          const meta = await chatbot.uploadAttachment(formData)
+          const meta = await chatbot.uploadAttachment(formData, {
+            timeoutMs: ATTACHMENT_UPLOAD_TIMEOUT_MS,
+          })
+          if (!meta?.attachment_id || !meta?.object_key) {
+            setAttachError('업로드 응답이 올바르지 않습니다. 다시 시도해주세요.')
+            continue
+          }
           const previewUrl = isImageAttachment(meta) ? URL.createObjectURL(file) : null
           setAttachments((prev) => [
             ...prev,

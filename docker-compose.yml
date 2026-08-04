@@ -13,6 +13,8 @@ services:
         condition: service_healthy
       keycloak:
         condition: service_healthy
+      minio:
+        condition: service_started
     logging:
       driver: json-file
       options:
@@ -155,6 +157,26 @@ services:
     networks:
       - jdone-network
 
+  # 챗봇 첨부·문서 업로드용 S3 호환 스토리지.
+  # API는 jdone-network 안에서 kmu-ai-minio:9000 으로 붙는다.
+  minio:
+    container_name: kmu-ai-minio
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - 9005:9000 # API (호스트). 컨테이너 간에는 kmu-ai-minio:9000
+      - 9006:9001 # 콘솔 (호스트)
+    volumes:
+      - minio-data:/data
+    # minio/minio는 scratch 기반이라 curl/bash 헬스체크를 넣을 수 없다.
+    # API는 첨부 요청 시에만 S3에 붙고, 버킷은 그때 자동 생성한다.
+    networks:
+      - jdone-network
+
   frontend: # 챗봇 대화 + 관리자 화면 (React/Vite 빌드 -> nginx 정적 서빙)
     container_name: kmu-ai-frontend
     build:
@@ -186,3 +208,5 @@ volumes:
     name: kmu-ai-redis-data
   keycloak-postgres-data:
     name: kmu-ai-keycloak-postgres-data
+  minio-data:
+    name: kmu-ai-minio-data

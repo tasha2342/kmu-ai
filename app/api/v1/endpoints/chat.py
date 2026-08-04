@@ -50,16 +50,20 @@ from app.models.enum import (
     UnansweredReason,
 )
 from app.utils.chat_attachments import (
+    VISION_DOCUMENT_EXTENSIONS,
     ResolvedAttachment,
     attachments_to_storage,
     build_object_key,
     default_query_for_attachments,
+    extract_plain_text,
+    file_extension,
     guess_kind,
     image_data_uri,
     is_allowed_upload,
     join_parsed_pages,
     new_attachment_id,
     owns_object_key,
+    pdf_pages_to_data_uris,
     resolve_mime,
     truncate_text,
 )
@@ -75,7 +79,7 @@ from app.utils.doc_parser import parse_document
 from app.utils.litellm import stream_chat_completion
 from app.utils.logger import get_api_logger
 from app.utils.pii_mask import apply_masking, load_active_rules
-from app.utils.s3 import get_s3_manager, S3Manager
+from app.utils.s3 import get_s3_manager
 import app.models.database as db_models
 import app.models.db_item as db_items
 import app.utils.auth as auth
@@ -921,9 +925,35 @@ async def _resolve_attachments(
         if kind != "document":
             return None, "attachment_unavailable"
 
-        parsed = await parse_document(file_data, item.file_name)
-        text = join_parsed_pages(parsed)
+        ext = file_extension(item.file_name)
+        # PDF는 Doc Parser 텍스트 추출이 아니라 Gemma 비전(페이지 이미지)으로 넣는다.
+        if ext in VISION_DOCUMENT_EXTENSIONS:
+            try:
+                page_uris = await asyncio.to_thread(pdf_pages_to_data_uris, file_data)
+            except Exception:
+                logger.exception("PDF 페이지 렌더링에 실패했습니다.")
+                return None, "attachment_parse_failed"
+            if not page_uris:
+                return None, "attachment_parse_failed"
+            resolved.append(ResolvedAttachment(
+                attachment_id=item.attachment_id,
+                file_name=item.file_name,
+                file_type=item.file_type,
+                kind="document",
+                object_key=item.object_key,
+                size_bytes=item.size_bytes,
+                data_uris=page_uris,
+            ))
+            continue
+
+        text = extract_plain_text(file_data, item.file_name) or ""
         if not text:
+            # txt/md/PDF 이외(docx·hwp 등). Doc Parser가 없으면 비전용 PDF/이미지로 안내한다.
+            parsed = await parse_document(file_data, item.file_name)
+            text = join_parsed_pages(parsed)
+        if not text:
+            if ext in {"doc", "docx", "hwp", "hwpx"}:
+                return None, "attachment_format_unsupported"
             return None, "attachment_parse_failed"
 
         text = apply_masking(text, masking_rules)
@@ -980,7 +1010,6 @@ async def _resolve_attachments(
 async def upload_chat_attachment(
     file: UploadFile = File(..., description="업로드할 이미지 또는 문서 파일입니다."),
     user_info: TokenUserInfo = Depends(auth.get_user_info),
-    s3_manager: S3Manager = Depends(get_s3_manager),
     logger: Logger = Depends(get_api_logger),
 ):
     file_name = file.filename or "file"
@@ -996,8 +1025,11 @@ async def upload_chat_attachment(
     attachment_id = new_attachment_id()
     object_key = build_object_key(user_info.username, attachment_id, file_name)
 
+    # Depends(get_s3_manager)로 두면 생성자(head_bucket)가 동기 블로킹이라
+    # 이벤트 루프·다른 요청까지 멈출 수 있다. 첨부가 있을 때만 연결하고 to_thread로 돌린다.
     try:
-        s3_manager.upload_file(file_data, object_key, content_type=mime)
+        s3_manager = await asyncio.to_thread(get_s3_manager)
+        await asyncio.to_thread(s3_manager.upload_file, file_data, object_key, mime)
     except Exception:
         logger.exception("챗봇 첨부 업로드에 실패했습니다.")
         return BadRequestResponse(message="파일 업로드에 실패했습니다.", target="file")
@@ -1191,7 +1223,8 @@ async def send_chat_message(
             "sources": [],
             "answer": localized_message(attachment_error_key, language or Language.KO),
             "needs_generation": False,
-            "unanswered_reason": UnansweredReason.MODEL_ERROR,
+            # 첨부 해석 실패는 모델 호출 전이므로 model_error로 기록하지 않는다.
+            "unanswered_reason": UnansweredReason.NO_RESULT,
             "retrieval_attempted": False,
             "retrieval_latency_ms": 0,
             "language": language or Language.KO,

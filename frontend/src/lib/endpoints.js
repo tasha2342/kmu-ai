@@ -17,7 +17,7 @@ export const chatbot = {
   /** stream=false 로 단일 JSON 응답을 받습니다. (스트리밍은 lib/chatStream.js) */
   sendMessage: (body) => api.post('/chatbot/message', { ...body, stream: false }),
   /** 대화용 이미지·문서 업로드. FormData에 `file` 필드를 넣습니다. */
-  uploadAttachment: (formData) => api.postForm('/chatbot/attachment', formData),
+  uploadAttachment: (formData, options) => api.postForm('/chatbot/attachment', formData, options),
   addFeedback: (body) => api.post('/chatbot/feedback', body),
   listFeedback: (params) => api.get(`/chatbot/feedback/list${buildQuery(params)}`),
 }

@@ -3,6 +3,7 @@ import boto3
 
 from typing import Optional
 
+from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
 from app.config import config
@@ -10,6 +11,15 @@ from app.utils.logger import get_logger
 
 
 logger = get_logger("s3", log_dir="logs")
+
+# MinIO가 잠시 내려가 있어도 챗봇 요청이 수분 동안 멈추지 않도록 짧게 끊는다.
+# addressing_style=path: MinIO는 virtual-hosted(bucket.endpoint)보다 path 스타일이 안전하다.
+_S3_CLIENT_CONFIG = BotoConfig(
+    connect_timeout=3,
+    read_timeout=30,
+    retries={"max_attempts": 1, "mode": "standard"},
+    s3={"addressing_style": "path"},
+)
 
 
 class S3Manager:
@@ -24,6 +34,7 @@ class S3Manager:
             aws_access_key_id=config.s3.access_key,
             aws_secret_access_key=config.s3.secret_key,
             region_name="us-east-1",
+            config=_S3_CLIENT_CONFIG,
         )
         self.bucket_name = config.s3.bucket_name
         self._ensure_bucket_exists()

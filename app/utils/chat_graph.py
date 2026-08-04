@@ -581,6 +581,13 @@ CANNED_MESSAGE_TRANSLATIONS: dict[str, dict[Language, str]] = {
         Language.VI: ("Tôi không đọc được tài liệu đính kèm. Tệp có thể bị hỏng hoặc không được hỗ trợ. "
                       "Vui lòng thử lại với tệp khác."),
     },
+    "attachment_format_unsupported": {
+        Language.EN: ("This file type (e.g. DOCX/HWP) isn't supported yet. "
+                      "Please save it as PDF or an image and attach it again."),
+        Language.ZH: "暂不支持该文件格式（如 DOCX/HWP）。请另存为 PDF 或图片后重新上传。",
+        Language.VI: ("Chưa hỗ trợ định dạng này (DOCX/HWP...). "
+                      "Vui lòng lưu thành PDF hoặc ảnh rồi đính kèm lại."),
+    },
     "attachment_unavailable": {
         Language.EN: "I couldn't load the attachment. Please upload the file again and ask your question.",
         Language.ZH: "无法加载附件。请重新上传文件后再提问。",
