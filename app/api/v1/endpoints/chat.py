@@ -11,13 +11,14 @@ from uuid import UUID, uuid4
 
 from peewee import fn
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, File, Path, Query, UploadFile
 
 from sse_starlette.sse import EventSourceResponse
 
 from app.config import config, env
 from app.exceptions.api_exception import DEFAULT_EXCEPTION_RESPONSES_WITH_FORBIDDEN
 from app.payloads.v1.chat import (
+    ChatAttachment,
     CreateChatSessionPayload,
     SendChatMessagePayload,
     UpdateChatSessionPayload,
@@ -50,6 +51,20 @@ from app.models.enum import (
     Language,
     UnansweredReason,
 )
+from app.utils.chat_attachments import (
+    ResolvedAttachment,
+    attachments_to_storage,
+    build_object_key,
+    default_query_for_attachments,
+    guess_kind,
+    image_data_uri,
+    is_allowed_upload,
+    join_parsed_pages,
+    new_attachment_id,
+    owns_object_key,
+    resolve_mime,
+    truncate_text,
+)
 from app.utils.chat_graph import (
     get_retrieval_collection_name,
     localized_message,
@@ -57,9 +72,11 @@ from app.utils.chat_graph import (
     update_session_summary,
 )
 from app.utils.database import DatabaseManager, get_db_manager
+from app.utils.doc_parser import parse_document
 from app.utils.litellm import stream_chat_completion
 from app.utils.logger import get_api_logger
 from app.utils.pii_mask import apply_masking, load_active_rules
+from app.utils.s3 import get_s3_manager, S3Manager
 import app.models.database as db_models
 import app.models.db_item as db_items
 import app.utils.auth as auth
@@ -842,6 +859,146 @@ async def delete_chat_session(
 
     return BaseMessageResponse(message="대화 세션이 성공적으로 삭제되었습니다.")
 
+
+async def _resolve_attachments(
+    attachments: Optional[list[ChatAttachment]],
+    user_name: str,
+    s3_manager: S3Manager,
+    masking_rules,
+) -> tuple[Optional[list[ResolvedAttachment]], Optional[str]]:
+    """메시지 첨부를 S3에서 가져와 모델 입력용으로 해석합니다.
+
+    Returns:
+        (resolved, error_message_key): 성공 시 key는 None. 실패 시 localized_message 키.
+    """
+
+    if not attachments:
+        return [], None
+
+    resolved: list[ResolvedAttachment] = []
+    evidence_limit = config.chatbot.evidence_max_chars
+
+    for item in attachments:
+        if not owns_object_key(user_name, item.object_key):
+            return None, "attachment_unavailable"
+
+        try:
+            file_data = s3_manager.download_file(item.object_key)
+        except Exception:
+            return None, "attachment_unavailable"
+
+        kind = item.kind or guess_kind(item.file_name, item.file_type)
+        if kind == "image":
+            resolved.append(ResolvedAttachment(
+                attachment_id=item.attachment_id,
+                file_name=item.file_name,
+                file_type=item.file_type,
+                kind="image",
+                object_key=item.object_key,
+                size_bytes=item.size_bytes,
+                data_uri=image_data_uri(item.file_type, file_data),
+            ))
+            continue
+
+        if kind != "document":
+            return None, "attachment_unavailable"
+
+        parsed = await parse_document(file_data, item.file_name)
+        text = join_parsed_pages(parsed)
+        if not text:
+            return None, "attachment_parse_failed"
+
+        text = apply_masking(text, masking_rules)
+        text = truncate_text(text, evidence_limit)
+        resolved.append(ResolvedAttachment(
+            attachment_id=item.attachment_id,
+            file_name=item.file_name,
+            file_type=item.file_type,
+            kind="document",
+            object_key=item.object_key,
+            size_bytes=item.size_bytes,
+            text=text,
+        ))
+
+    return resolved, None
+
+
+@router.post("/attachment", summary="챗봇 첨부 파일 업로드",
+    description=(
+        "대화에 쓸 이미지·문서를 업로드합니다.  \n"
+        "반환된 메타데이터를 `POST /v1/chatbot/message`의 `attachments`에 넣어 전송하면 "
+        "이미지는 멀티모달로, 문서는 파싱 텍스트로 모델에 전달됩니다.  \n"
+        "허용: png/jpg/jpeg/webp/gif, pdf/doc/docx/txt/hwp/hwpx/md. 파일당 최대 10MB."
+    ),
+    responses={
+        200: {"description": "업로드된 첨부 메타데이터입니다.", "model": ChatAttachment},
+        400: {
+            "description": "잘못된 요청입니다.",
+            "model": BadRequestError,
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "empty_file": {
+                            "summary": "빈 파일",
+                            "value": {
+                                "message": "파일이 비어있습니다.",
+                                "target": "file",
+                            },
+                        },
+                        "unsupported": {
+                            "summary": "미지원 형식",
+                            "value": {
+                                "message": "지원하지 않는 파일 형식입니다.",
+                                "target": "file",
+                            },
+                        },
+                    }
+                }
+            },
+        },
+        **DEFAULT_EXCEPTION_RESPONSES_WITH_FORBIDDEN,
+    },
+)
+async def upload_chat_attachment(
+    file: UploadFile = File(..., description="업로드할 이미지 또는 문서 파일입니다."),
+    user_info: TokenUserInfo = Depends(auth.get_user_info),
+    s3_manager: S3Manager = Depends(get_s3_manager),
+    logger: Logger = Depends(get_api_logger),
+):
+    file_name = file.filename or "file"
+    file_data = await file.read()
+    ok, error_message = is_allowed_upload(file_name, file.content_type, len(file_data))
+    if not ok:
+        return BadRequestResponse(message=error_message, target="file")
+
+    kind = guess_kind(file_name, file.content_type)
+    if kind is None:
+        return BadRequestResponse(message="지원하지 않는 파일 형식입니다.", target="file")
+    mime = resolve_mime(file_name, file.content_type)
+    attachment_id = new_attachment_id()
+    object_key = build_object_key(user_info.username, attachment_id, file_name)
+
+    try:
+        s3_manager.upload_file(file_data, object_key, content_type=mime)
+    except Exception:
+        logger.exception("챗봇 첨부 업로드에 실패했습니다.")
+        return BadRequestResponse(message="파일 업로드에 실패했습니다.", target="file")
+
+    logger.info(
+        f"챗봇 첨부가 업로드되었습니다. "
+        f"(user={user_info.username}, kind={kind}, object_key={object_key}, size={len(file_data)})"
+    )
+
+    return ChatAttachment(
+        attachment_id=attachment_id,
+        file_name=file_name,
+        file_type=mime,
+        kind=kind,
+        object_key=object_key,
+        size_bytes=len(file_data),
+    )
+
+
 @router.post("/message", summary="대화 메시지 전송",
     description=(
         "질문을 전송하고 챗봇 응답을 받습니다.  \n"
@@ -999,7 +1156,19 @@ async def send_chat_message(
 
     # 개인정보 마스킹 (저장·검색·응답에 동일 규칙 적용)
     masking_rules = await load_active_rules(db_manager)
-    user_message = apply_masking(payload.message, masking_rules)
+    raw_message = (payload.message or "").strip()
+    user_message = apply_masking(raw_message, masking_rules) if raw_message else ""
+    graph_query = default_query_for_attachments(user_message)
+
+    # 첨부 해석 (이미지 data URI / 문서 파싱 텍스트). DB에는 메타만 저장합니다.
+    stored_attachments = attachments_to_storage(payload.attachments)
+    s3_manager = get_s3_manager()
+    resolved_attachments, attachment_error_key = await _resolve_attachments(
+        attachments=payload.attachments,
+        user_name=user_info.username,
+        s3_manager=s3_manager,
+        masking_rules=masking_rules,
+    )
 
     # 사용자 메시지 저장
     user_message_id = uuid4()
@@ -1007,38 +1176,52 @@ async def send_chat_message(
         id=user_message_id,
         session_id=session.id,
         role=ChatRole.USER,
-        content=user_message,
-        attachments=payload.attachments,
+        content=user_message or graph_query,
+        attachments=stored_attachments,
     )
     await db_manager.execute_query(query)
 
-    # 그래프 실행 (의도 분류 → 검색 → 프롬프트 구성)
-    try:
-        state = await run_chat_graph(
-            query=user_message,
-            session_id=str(session.id),
-            message_id=str(user_message_id),
-            language=language,
-            history=history,
-            summary=session.summary,
-            message_count=(session.message_count or 0) + 1,
-            db_manager=db_manager,
-            user_info=user_info,
-            logger=logger,
-        )
-    except Exception:
-        logger.exception("챗봇 그래프 실행 중 오류가 발생했습니다.")
-        # 그래프가 통째로 실패해도 500으로 끊지 않고 안내 문구로 응답합니다.
+    if attachment_error_key:
         state = {
-            "intent": ChatIntent.UNKNOWN,
+            "intent": ChatIntent.DOCUMENT if payload.attachments else ChatIntent.UNKNOWN,
             "sources": [],
-            "answer": localized_message("fallback", language),
+            "answer": localized_message(attachment_error_key, language or Language.KO),
             "needs_generation": False,
             "unanswered_reason": UnansweredReason.MODEL_ERROR,
             "retrieval_attempted": False,
             "retrieval_latency_ms": 0,
             "language": language or Language.KO,
+            "messages": [],
         }
+    else:
+        # 그래프 실행 (의도 분류 → 검색 → 프롬프트 구성)
+        try:
+            state = await run_chat_graph(
+                query=graph_query,
+                session_id=str(session.id),
+                message_id=str(user_message_id),
+                language=language,
+                history=history,
+                summary=session.summary,
+                message_count=(session.message_count or 0) + 1,
+                db_manager=db_manager,
+                user_info=user_info,
+                logger=logger,
+                attachments=resolved_attachments,
+            )
+        except Exception:
+            logger.exception("챗봇 그래프 실행 중 오류가 발생했습니다.")
+            # 그래프가 통째로 실패해도 500으로 끊지 않고 안내 문구로 응답합니다.
+            state = {
+                "intent": ChatIntent.UNKNOWN,
+                "sources": [],
+                "answer": localized_message("fallback", language),
+                "needs_generation": False,
+                "unanswered_reason": UnansweredReason.MODEL_ERROR,
+                "retrieval_attempted": False,
+                "retrieval_latency_ms": 0,
+                "language": language or Language.KO,
+            }
 
     # 자동 감지 모드에서는 그래프가 판정한 언어가 이번 턴의 응답 언어입니다.
     language = state.get("language") or language or Language.KO
@@ -1065,7 +1248,7 @@ async def send_chat_message(
             session=session,
             history=history,
             state=state,
-            query_text=user_message,
+            query_text=user_message or graph_query,
             answer=answer,
             user_message_id=user_message_id,
             assistant_message_id=assistant_message_id,
@@ -1131,7 +1314,7 @@ async def send_chat_message(
                 session=session,
                 history=history,
                 state=state,
-                query_text=user_message,
+                query_text=user_message or graph_query,
                 answer=answer,
                 user_message_id=user_message_id,
                 assistant_message_id=assistant_message_id,
@@ -1163,7 +1346,7 @@ async def send_chat_message(
                         session=session,
                         history=history,
                         state=state,
-                        query_text=user_message,
+                        query_text=user_message or graph_query,
                         answer=apply_masking(
                             "".join(chunks) or localized_message("fallback", language), masking_rules),
                         user_message_id=user_message_id,

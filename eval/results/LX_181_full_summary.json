@@ -1,0 +1,40 @@
+{
+  "n": 48,
+  "answer_accuracy": 0.5,
+  "recall_at_k": 0.6667,
+  "mrr": 0.4899,
+  "avg_latency_sec": 0.0039,
+  "failure_counts": {
+    "chunking_failure": 6,
+    "retrieval_failure": 12,
+    "generation_failure": 6
+  },
+  "date_accuracy": 0.7083,
+  "date_recall_at_k": 0.6667,
+  "date_n": 24,
+  "table_accuracy": 0.2917,
+  "table_recall_at_k": 0.6667,
+  "table_n": 24,
+  "subtype_accuracy": {
+    "article_revision": 0.4,
+    "cell_value": 0.2941,
+    "empty_cell_probe": 0.0,
+    "filename_effective": 0.875,
+    "historical_byeolchik": 1.0,
+    "latest_byeolchik": 0.7143,
+    "list_structure": 0.3333,
+    "paraphrase_filename": 0.0,
+    "table_meta": 0.3333
+  },
+  "experiment": "LX_181_full",
+  "index": "E181_full",
+  "backend": "lexical",
+  "top_k": 12,
+  "date_lane": true,
+  "table_lane": true,
+  "title_routing": true,
+  "vision": "off",
+  "generate": false,
+  "documents": 181,
+  "chunks": 5359
+}

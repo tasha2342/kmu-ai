@@ -155,3 +155,6 @@ config.yaml
 # macOS AppleDouble metadata
 ._*
 .AppleDouble
+
+# Claude Code 로컬 설정 (이 머신 전용, 커밋하지 않는다)
+.claude/settings.local.json

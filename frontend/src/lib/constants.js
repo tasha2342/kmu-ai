@@ -44,6 +44,7 @@ export const CHAT_INTENT_LABEL = {
   career: '취업·진로',
   personal: '개인 정보',
   document: '문서 기반',
+  emotion: '정서 지원',
   small_talk: '일상 대화',
   abuse: '부적절 발화',
   unknown: '판별 불가',

@@ -465,6 +465,8 @@ class ChatIntent(str, Enum):
     """개인 학적·성적·비교과 등 개인 데이터 문의 (학내 API 연계)"""
     DOCUMENT = "document"
     """업로드 문서·이미지 기반 문의 (멀티모달)"""
+    EMOTION = "emotion"
+    """학업 스트레스·불안·우울 등 정서적 어려움 호소 (정보 안내가 아닌 정서 지원)"""
     SMALL_TALK = "small_talk"
     """인사 등 일상 대화"""
     ABUSE = "abuse"
@@ -482,6 +484,7 @@ class ChatIntent(str, Enum):
                 "career": "취업·진로·채용 문의 (RAG + 외부 연계)",
                 "personal": "개인 학적·성적·비교과 등 개인 데이터 문의 (학내 API 연계)",
                 "document": "업로드 문서·이미지 기반 문의 (멀티모달)",
+                "emotion": "학업 스트레스·불안·우울 등 정서적 어려움 호소 (정서 지원)",
                 "small_talk": "인사 등 일상 대화",
                 "abuse": "비속어·장난·서비스 목적과 무관한 발화",
                 "unknown": "의도 판별 불가 (모호한 질문)",

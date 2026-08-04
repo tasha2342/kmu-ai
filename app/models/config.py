@@ -202,6 +202,19 @@ class ChatbotMessagesConfig(BaseModel):
         "학번·성적·수강 이력 등 개인 정보 조회는 학내 시스템 연계가 완료된 후 제공될 예정입니다."
     )
     """학내 개인정보 연계 API 미제공 시 안내 문구 (KAI-REQ-003~012)"""
+    attachment_required: str = (
+        "첨부 파일 내용에 대한 질문이시군요. 이미지 또는 문서를 첨부한 뒤 다시 질문해 주세요."
+    )
+    """DOCUMENT 의도인데 첨부가 없을 때 안내 문구"""
+    attachment_parse_failed: str = (
+        "첨부하신 문서를 읽지 못했습니다. 파일이 손상되었거나 지원하지 않는 형식일 수 있습니다. "
+        "다른 파일로 다시 시도해 주세요."
+    )
+    """문서 파싱 실패 안내 문구"""
+    attachment_unavailable: str = (
+        "첨부 파일을 불러오지 못했습니다. 파일을 다시 업로드한 뒤 질문해 주세요."
+    )
+    """S3 다운로드·소유권 검증 실패 안내 문구"""
 
 
 class ChatbotConfig(BaseModel):
@@ -251,7 +264,19 @@ class ChatbotConfig(BaseModel):
     남아 이후 실행이 영구히 막힙니다. 이 시간을 넘긴 `running` 작업은 실패로 회수합니다.
     """
     abuse_keywords: list[str] = []
-    """비속어·목적 외 발화 사전 필터 키워드 (KAI-REQ-038)"""
+    """비속어·목적 외 발화 사전 필터 키워드 (KAI-REQ-038)
+
+    이 필터는 LLM 분류보다 먼저 적용되어 곧바로 `abuse` 정형 문구로 끝납니다.
+    "죽겠다", "미치겠다"처럼 힘들다는 뜻으로도 쓰이는 말을 넣으면 정서 지원이 필요한 학생이
+    "부적절한 발화" 안내를 받게 되므로, 명백한 욕설만 등록하세요.
+    """
+    counseling_contact: Optional[str] = None
+    """정서적 위기 신호가 보일 때 안내할 상담 창구 문구
+
+    챗봇은 상담사가 아니므로, 자해·자살 암시 등 심각한 신호에는 공감만 하고 끝내지 않고
+    실제 사람에게 연결될 통로를 함께 알려야 합니다. 학교마다 창구가 달라 코드에 두지 않고
+    설정으로 받습니다. 비워 두면 상담 연결 안내 없이 공감만 수행합니다.
+    """
     messages: ChatbotMessagesConfig = ChatbotMessagesConfig()
     """안내 문구 설정"""
 

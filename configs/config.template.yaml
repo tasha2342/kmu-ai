@@ -63,7 +63,15 @@ chatbot:
   summary_trigger_count: 20 # 누적 요약을 갱신할 세션 메시지 수
   # 미입력 자동 종료는 .env에서 설정한다. (ENABLE_SESSION_IDLE_TIMEOUT / SESSION_IDLE_TIMEOUT_MINUTES)
   ingestion_job_timeout_minutes: 60 # 수집 작업을 실패로 간주하는 기준 시간(분)
-  abuse_keywords: [] # 비속어·목적 외 발화 사전 필터 키워드
+  # 비속어·목적 외 발화 사전 필터 키워드.
+  # LLM 분류보다 먼저 적용되어 곧바로 abuse 안내 문구로 끝나므로, "죽겠다"처럼 힘들다는 뜻으로도
+  # 쓰이는 말은 넣지 말 것. (정서 지원이 필요한 학생이 "부적절한 발화" 안내를 받게 된다)
+  abuse_keywords: []
+  # 정서적 위기 신호(자해·자살 암시 등)가 보일 때 답변에 함께 안내할 상담 창구.
+  # 비워 두면(null) 상담 연결 안내 없이 공감만 한다. 교내 학생상담센터 연락처를 확인해 추가할 것.
+  #   예) - 계명대 학생상담센터: 053-580-XXXX (평일 09:00~18:00)
+  counseling_contact: |
+    - 자살예방 상담전화: 109 (24시간, 무료)
 # 외부 서비스 연계 설정 (API Key 미발급 시 바로가기 링크만 안내)
 external_links:
   - name: 워크넷

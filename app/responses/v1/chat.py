@@ -12,8 +12,28 @@ from app.models.enum import (
     ChatSessionStatus,
     UnansweredReason,
 )
+from app.payloads.v1.chat import ChatAttachment
 import app.models.db_item as db_items
 import app.utils.common as util
+
+
+def _coerce_attachments(raw: Optional[list]) -> Optional[list[ChatAttachment]]:
+    """DB에 저장된 첨부 JSON을 응답 스키마로 변환합니다.
+
+    예전 스텁 형식({file_name, file_type}만 있는 경우)은 필수 필드가 없어 무시합니다.
+    """
+
+    if not raw:
+        return None
+    items: list[ChatAttachment] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            items.append(ChatAttachment.model_validate(item))
+        except Exception:
+            continue
+    return items or None
 
 
 class ChatSessionItem(BaseModel):
@@ -164,10 +184,17 @@ class ChatMessageItem(BaseModel):
         None,
         description="응답 근거 목록입니다."
     )
-    attachments: Optional[list[dict]] = Field(
+    attachments: Optional[list[ChatAttachment]] = Field(
         None,
         description="첨부 파일 목록입니다.",
-        examples=[[{"file_name": "시간표.png", "file_type": "image/png"}]]
+        examples=[[{
+            "attachment_id": "6f2c9a10-3b4d-4c5e-9f8a-1b2c3d4e5f60",
+            "file_name": "시간표.png",
+            "file_type": "image/png",
+            "kind": "image",
+            "object_key": "chat-attachments/20241234/2026/08/6f2c9a10-3b4d-4c5e-9f8a-1b2c3d4e5f60_시간표.png",
+            "size_bytes": 20480,
+        }]],
     )
     model_name: Optional[str] = Field(
         None,
@@ -206,7 +233,7 @@ class ChatMessageItem(BaseModel):
             content=message.content,
             detected_intent=message.detected_intent,
             sources=[ChatSourceItem(**source) for source in (message.sources or [])],
-            attachments=message.attachments,
+            attachments=_coerce_attachments(message.attachments),
             model_name=message.model_name,
             latency_ms=message.latency_ms,
             is_answered=message.is_answered,

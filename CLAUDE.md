@@ -71,7 +71,11 @@ frontend/src/
   합계가 모델 컨텍스트 상한을 넘으면 응답이 400으로 실패하고 미응답 문구로 대체됩니다.
   이력서 전문을 붙여넣는 사용자가 실제로 있어서 들어간 장치입니다.
 - **의도 분류**(`ChatIntent`)가 라우팅 기준입니다. `academic`/`career`/`personal`/`document`/
-  `small_talk`/`abuse`/`unknown`. `retrieval_log.detected_intent`에 기록됩니다.
+  `emotion`/`small_talk`/`abuse`/`unknown`. `retrieval_log.detected_intent`에 기록됩니다.
+- **`emotion`은 정서 지원 경로**입니다. 학생이 힘들다고 털어놓는 발화는 검색 없이 바로
+  `generate`로 갑니다. 검색을 태우면 근거가 안 잡혀 "정보를 찾을 수 없습니다"로 끊깁니다.
+  위기 신호 시 안내할 상담 창구는 `chatbot.counseling_contact`(설정)에서 옵니다.
+  `chatbot.abuse_keywords`에 "죽겠다" 같은 말을 넣으면 이 경로가 사전 필터에 먹혀 막힙니다.
 - **세션 요약**(`summary`)이 장기 맥락을 담습니다. 매 턴이 아니라
   `chatbot.summary_trigger_count`마다 갱신됩니다.
 - 보조 LLM 호출(의도 분류·요약)은 `_complete()`를 씁니다. 스트리밍이 아니고,

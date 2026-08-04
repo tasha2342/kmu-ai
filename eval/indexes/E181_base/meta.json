@@ -1,0 +1,19 @@
+{
+  "name": "E181_base",
+  "documents": 181,
+  "chunks": 5359,
+  "typed_dates": false,
+  "table_captions": false,
+  "with_tables": true,
+  "embedding_model": "nlpai-lab/KURE-v1",
+  "section_type_counts": {
+    "article": 3218,
+    "addendum": 648,
+    "chapter": 519,
+    "table": 443,
+    "body": 184,
+    "meta": 181,
+    "attachment": 124,
+    "section": 42
+  }
+}

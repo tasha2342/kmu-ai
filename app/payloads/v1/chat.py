@@ -1,8 +1,9 @@
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.enum import ChatLanguage, ChatSessionStatus
+from app.utils.chat_attachments import MAX_ATTACHMENTS_PER_MESSAGE
 
 
 def _reject_null_bytes(value: Optional[str]) -> Optional[str]:
@@ -16,6 +17,51 @@ def _reject_null_bytes(value: Optional[str]) -> Optional[str]:
     if value is not None and "\x00" in value:
         raise ValueError("널바이트(0x00)는 사용할 수 없습니다.")
     return value
+
+
+class ChatAttachment(BaseModel):
+    """챗봇 메시지 첨부 메타데이터입니다.
+
+    바이너리·base64는 포함하지 않습니다. 업로드 API가 반환한 값을 메시지 전송 시 그대로 넣습니다.
+    """
+
+    attachment_id: str = Field(
+        ...,
+        description="첨부 ID입니다.",
+        examples=["6f2c9a10-3b4d-4c5e-9f8a-1b2c3d4e5f60"],
+    )
+    file_name: str = Field(
+        ...,
+        min_length=1,
+        max_length=255,
+        description="원본 파일명입니다.",
+        examples=["시간표.png"],
+    )
+    file_type: str = Field(
+        ...,
+        min_length=1,
+        max_length=128,
+        description="MIME 타입입니다.",
+        examples=["image/png"],
+    )
+    kind: Literal["image", "document"] = Field(
+        ...,
+        description="첨부 종류입니다. 이미지는 멀티모달로, 문서는 파싱 텍스트로 모델에 전달됩니다.",
+        examples=["image"],
+    )
+    object_key: str = Field(
+        ...,
+        min_length=1,
+        max_length=512,
+        description="S3 객체 키입니다.",
+        examples=["chat-attachments/20241234/2026/08/6f2c9a10-3b4d-4c5e-9f8a-1b2c3d4e5f60_시간표.png"],
+    )
+    size_bytes: Optional[int] = Field(
+        None,
+        ge=0,
+        description="파일 크기(바이트)입니다.",
+        examples=[20480],
+    )
 
 
 class CreateChatSessionPayload(BaseModel):
@@ -76,9 +122,13 @@ class SendChatMessagePayload(BaseModel):
     """대화 메시지 전송 요청"""
 
     message: str = Field(
-        ..., min_length=1, max_length=4000,
-        description="사용자 질문입니다.",
-        examples=["2026학년도 1학기 수강신청 기간이 언제인가요?"]
+        "",
+        max_length=4000,
+        description=(
+            "사용자 질문입니다.  \n"
+            "첨부가 있으면 비워 둘 수 있습니다. 메시지와 첨부 중 하나 이상은 필요합니다."
+        ),
+        examples=["2026학년도 1학기 수강신청 기간이 언제인가요?"],
     )
 
     _no_null_message = field_validator("message")(_reject_null_bytes)
@@ -109,11 +159,28 @@ class SendChatMessagePayload(BaseModel):
         ),
         examples=[True, False]
     )
-    attachments: Optional[list[dict]] = Field(
+    attachments: Optional[list[ChatAttachment]] = Field(
         None,
+        max_length=MAX_ATTACHMENTS_PER_MESSAGE,
         description=(
-            "첨부 파일 목록입니다. (멀티모달 질의)  \n"
-            "현재는 메시지에 함께 보관만 하며 모델 입력으로는 사용하지 않습니다."
+            "첨부 파일 목록입니다.  \n"
+            "`POST /v1/chatbot/attachment`로 업로드한 메타를 그대로 전달합니다.  \n"
+            "이미지는 멀티모달로, 문서는 파싱 텍스트로 모델에 전달됩니다."
         ),
-        examples=[[{"file_name": "시간표.png", "file_type": "image/png"}]]
+        examples=[[{
+            "attachment_id": "6f2c9a10-3b4d-4c5e-9f8a-1b2c3d4e5f60",
+            "file_name": "시간표.png",
+            "file_type": "image/png",
+            "kind": "image",
+            "object_key": "chat-attachments/20241234/2026/08/6f2c9a10-3b4d-4c5e-9f8a-1b2c3d4e5f60_시간표.png",
+            "size_bytes": 20480,
+        }]],
     )
+
+    @model_validator(mode="after")
+    def require_message_or_attachments(self) -> "SendChatMessagePayload":
+        """메시지 본문과 첨부 중 하나 이상이 있어야 합니다."""
+
+        if not (self.message or "").strip() and not self.attachments:
+            raise ValueError("메시지 또는 첨부 파일이 필요합니다.")
+        return self

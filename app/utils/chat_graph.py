@@ -37,6 +37,7 @@ import app.models.database as db_models
 import app.models.db_item as db_items
 import app.utils.common as util
 import app.utils.faq_service as faq_service
+from app.utils.chat_attachments import build_user_content
 
 
 logger = get_logger("chat_graph", log_dir="logs")
@@ -62,8 +63,11 @@ async def _collection_retrieval_settings(
     return top_k, threshold
 
 
-RETRIEVAL_INTENTS = (ChatIntent.ACADEMIC, ChatIntent.CAREER, ChatIntent.DOCUMENT)
-"""지식베이스 검색(FAQ + 학칙·규정)을 수행할 의도 목록 (KAI-REQ-013/015)"""
+RETRIEVAL_INTENTS = (ChatIntent.ACADEMIC, ChatIntent.CAREER)
+"""지식베이스 검색(FAQ + 학칙·규정)을 수행할 의도 목록 (KAI-REQ-013/015)
+
+DOCUMENT는 업로드 첨부를 근거로 답하므로 검색 대상에서 제외합니다.
+"""
 
 LANGUAGE_LABELS = {
     Language.KO: "한국어",
@@ -121,9 +125,17 @@ CLASSIFY_SYSTEM_PROMPT = (
     "- personal: 내 학번·성적·수강 내역·등록금 납부 등 본인 개인 데이터 조회 요청\n"
     "- document: 사용자가 업로드한 첨부파일(문서·이미지) 자체의 내용에 대한 문의.\n"
     "  이력서 본문처럼 글을 대화에 직접 붙여넣고 검토를 요청한 경우는 document가 아니라 career입니다.\n"
+    "- emotion: 힘들다·슬프다·불안하다·지친다·포기하고 싶다처럼 **본인의 감정이나 어려움을 털어놓는 발화**.\n"
+    "  학업·성적·진로 부담을 호소하는 경우도 emotion입니다. 정보를 묻는 것이 아니라 마음을 이야기하는 발화입니다.\n"
     "- small_talk: 인사, 감사, 잡담 등 일상 대화\n"
     "- abuse: 비속어, 욕설, 장난, 서비스 목적과 무관한 발화\n"
     "- unknown: 위 어디에도 해당하지 않거나 의미를 알 수 없는 모호한 발화\n"
+    "\n"
+    "[라벨이 겹칠 때]\n"
+    "- 감정 호소와 정보 질문이 함께 있으면, 물음표로 끝나는 구체적 질문이 있을 때만 academic·career이고\n"
+    "  그렇지 않으면 emotion입니다. (예: \"학점 부담돼서 너무 힘들어\" -> emotion)\n"
+    "- 감정이 드러난 발화는 small_talk이나 unknown으로 두지 말고 emotion으로 분류합니다.\n"
+    "- 감정 표현에 비속어가 섞여 있어도, 챗봇을 겨냥한 욕설이 아니면 abuse가 아니라 emotion입니다.\n"
     "\n"
     "[답변 언어 라벨]\n"
     "ko(한국어) / en(영어) / zh(중국어) / vi(베트남어) 중 발화의 주된 언어를 고릅니다.\n"
@@ -189,6 +201,10 @@ CLASSIFY_FEW_SHOTS: list[tuple[str, str]] = [
     _shot("내 이번 학기 성적 알려줘", ChatIntent.PERSONAL, Language.KO),
     _shot("내가 지금까지 들은 전공 학점 몇이야?", ChatIntent.PERSONAL, Language.KO),
     _shot("방금 올린 PDF에서 제출 기한만 정리해줘", ChatIntent.DOCUMENT, Language.KO),
+    # 감정 호소. 학사 어휘("학점", "시험")가 섞여도 질문이 아니면 academic이 아니라는 것을 보여 줍니다.
+    _shot("나 사실 조금 너무 슬퍼.. 의예과라.. 학점을 너무 많이 들어야해...", ChatIntent.EMOTION, Language.KO),
+    _shot("시험 망친 것 같아서 너무 불안해", ChatIntent.EMOTION, Language.KO),
+    _shot("다 그만두고 휴학하고 싶다 진짜 지친다", ChatIntent.EMOTION, Language.KO),
     _shot("안녕! 넌 누구야?", ChatIntent.SMALL_TALK, Language.KO),
     _shot("야 이 멍청한 봇아", ChatIntent.ABUSE, Language.KO),
     _shot("그거 어떻게 해?", ChatIntent.UNKNOWN, Language.KO),
@@ -196,6 +212,7 @@ CLASSIFY_FEW_SHOTS: list[tuple[str, str]] = [
     # 언어 라벨만 달라져야 한다는 점을 모델에 보여 줍니다. (KAI-REQ-029)
     _shot("How do I apply for a leave of absence?", ChatIntent.ACADEMIC, Language.EN),
     _shot("Where can I get help with my resume?", ChatIntent.CAREER, Language.EN),
+    _shot("I feel so overwhelmed with all these classes", ChatIntent.EMOTION, Language.EN),
     _shot("请问奖学金怎么申请？", ChatIntent.ACADEMIC, Language.ZH),
     _shot("Thời gian đăng ký môn học là khi nào?", ChatIntent.ACADEMIC, Language.VI),
     _shot("Xin chào, bạn là ai?", ChatIntent.SMALL_TALK, Language.VI),
@@ -244,6 +261,8 @@ class ChatGraphState(TypedDict, total=False):
     """자동 감지된 발화 언어 (명시 지정이어도 기록은 남깁니다)"""
     history: list[dict]
     """최근 대화 이력 (`{"role": ..., "content": ...}`)"""
+    attachments: list
+    """이번 턴에 해석된 첨부 목록 (`ResolvedAttachment`). 이력에는 넣지 않습니다."""
     summary: Optional[str]
     """세션 누적 요약"""
     message_count: int
@@ -541,6 +560,25 @@ CANNED_MESSAGE_TRANSLATIONS: dict[str, dict[Language, str]] = {
         Language.VI: ("Việc tra cứu thông tin cá nhân như mã số sinh viên, điểm số, lịch sử học phần sẽ được "
                       "cung cấp sau khi hoàn tất kết nối với hệ thống của trường."),
     },
+    "attachment_required": {
+        Language.EN: ("That looks like a question about an uploaded file. "
+                      "Please attach an image or document and ask again."),
+        Language.ZH: "这似乎是关于已上传文件的问题。请先附上图片或文档后再提问。",
+        Language.VI: ("Có vẻ bạn đang hỏi về tệp đã tải lên. "
+                      "Vui lòng đính kèm hình ảnh hoặc tài liệu rồi hỏi lại."),
+    },
+    "attachment_parse_failed": {
+        Language.EN: ("I couldn't read the attached document. The file may be damaged or unsupported. "
+                      "Please try again with a different file."),
+        Language.ZH: "无法读取您附上的文档。文件可能已损坏或不被支持。请更换文件后重试。",
+        Language.VI: ("Tôi không đọc được tài liệu đính kèm. Tệp có thể bị hỏng hoặc không được hỗ trợ. "
+                      "Vui lòng thử lại với tệp khác."),
+    },
+    "attachment_unavailable": {
+        Language.EN: "I couldn't load the attachment. Please upload the file again and ask your question.",
+        Language.ZH: "无法加载附件。请重新上传文件后再提问。",
+        Language.VI: "Tôi không tải được tệp đính kèm. Vui lòng tải lại tệp rồi đặt câu hỏi.",
+    },
 }
 """정형 안내 문구의 언어별 대응 문구 (KAI-REQ-029)
 
@@ -675,6 +713,7 @@ def build_system_prompt(
     sources: list[FaqSearchResult],
     intent: ChatIntent,
     regulation_sources: Optional[list[RegulationSearchResult]] = None,
+    has_attachments: bool = False,
 ) -> str:
     """최종 응답 생성을 위한 시스템 프롬프트를 구성합니다.
 
@@ -687,6 +726,7 @@ def build_system_prompt(
         sources (list[FaqSearchResult]): FAQ 검색 결과
         intent (ChatIntent): 감지 의도
         regulation_sources (Optional[list[RegulationSearchResult]]): 학칙·규정 검색 결과
+        has_attachments (bool): 이번 턴에 사용자 첨부가 있는지 여부
 
     Returns:
         str: 시스템 프롬프트
@@ -694,37 +734,64 @@ def build_system_prompt(
 
     language_label = _language_label(language)
 
-    parts = [
-        "당신은 계명대학교 학생을 돕는 학사·취업 안내 챗봇입니다.",
-        f"현재 시각은 {util.format_datetime(util.get_now())} 입니다.",
-        "",
-        "[답변 규칙]",
-        f"1. 반드시 {language_label}로 답변합니다.",
-        "2. 아래 [검색 근거]에 있는 내용만 사실로 사용합니다. 근거에 없는 학사 정보·일정·금액·연락처를 지어내지 마세요.",
-        "3. 근거를 사용해 답변할 때는 답변 끝에 어떤 FAQ·문서를 참고했는지 출처를 밝힙니다. (원문 URL이 있으면 함께 표기)",
-        "4. 근거가 부족하거나 확신할 수 없으면 추측하지 말고, 모른다고 명확히 안내한 뒤 학사지원팀 등 담당 부서 문의를 권합니다.",
-        "5. 학번·성적·수강 이력 등 개인 데이터는 조회 권한이 없으므로 절대 만들어내지 않습니다.",
-        "6. 불필요한 서론 없이 핵심부터 간결하게 안내하고, 항목이 여러 개면 목록으로 정리합니다.",
+    # 규칙은 번호 없이 담고 마지막에 한 번에 번호를 붙입니다. 의도·첨부 조건이 겹칠 때
+    # 번호를 손으로 적으면 같은 번호가 두 번 나가게 됩니다.
+    rules = [
+        f"반드시 {language_label}로 답변합니다.",
+        "아래 [검색 근거]에 있는 내용만 사실로 사용합니다. 근거에 없는 학사 정보·일정·금액·연락처를 지어내지 마세요.",
+        "근거를 사용해 답변할 때는 답변 끝에 어떤 FAQ·문서를 참고했는지 출처를 밝힙니다. (원문 URL이 있으면 함께 표기)",
+        "근거가 부족하거나 확신할 수 없으면 추측하지 말고, 모른다고 명확히 안내한 뒤 학사지원팀 등 담당 부서 문의를 권합니다.",
+        "학번·성적·수강 이력 등 개인 데이터는 조회 권한이 없으므로 절대 만들어내지 않습니다.",
+        "불필요한 서론 없이 핵심부터 간결하게 안내하고, 항목이 여러 개면 목록으로 정리합니다. "
+        "단, 감정에 공감하는 대목에는 이 간결함을 적용하지 않습니다.",
+        # 정서 지원은 의도가 emotion이 아닐 때도 필요합니다. 학사 질문 끝에 "너무 힘드네요"가
+        # 붙는 경우가 실제로 많은데, 정보만 답하고 지나가면 사용자는 무시당했다고 느낍니다.
+        "사용자가 힘들다·슬프다·불안하다처럼 감정을 드러내면, 정보를 안내하기 전에 그 마음부터 알아줍니다. "
+        "사용자가 말한 상황을 그대로 짚어 공감하고, 그다음에 필요한 정보를 이어 갑니다. "
+        "이 공감은 [검색 근거]가 없어도 됩니다. 규칙 2·4는 학사 사실 정보에만 적용됩니다.",
     ]
 
     career_links = _external_links_text() if intent == ChatIntent.CAREER else ""
+    counseling = (app_config.chatbot.counseling_contact or "").strip()
 
-    if intent == ChatIntent.SMALL_TALK:
-        parts.append(
-            "7. 일상 대화에는 짧고 친절하게 답한 뒤, 학사·취업 관련 질문을 도울 수 있음을 안내합니다."
+    if intent == ChatIntent.EMOTION:
+        rules.append(_emotion_rule(counseling))
+    elif intent == ChatIntent.SMALL_TALK:
+        rules.append(
+            "일상 대화에는 짧고 친절하게 답한 뒤, 학사·취업 관련 질문을 도울 수 있음을 안내합니다. "
+            "다만 사용자가 감정을 털어놓았다면 안내를 서두르지 말고 공감을 먼저 충분히 합니다."
         )
     elif intent == ChatIntent.CAREER:
         # 취업 지원은 서비스의 핵심 목적(KAI-REQ-002/018/020/021)인데, 지식베이스에는 교내 행정
         # 규정만 있어 취업 질문은 근거가 거의 잡히지 않습니다. 규칙 2·4를 그대로 적용하면 모든
         # 취업 질문이 "모르겠습니다"로 끝나므로, 대학 고유 사실과 일반 지식을 구분해 허용합니다.
         rule = (
-            "7. 취업·진로 질문은 [검색 근거]에 답이 없어도, 이력서·자기소개서 작성법이나 면접 준비처럼 "
+            "취업·진로 질문은 [검색 근거]에 답이 없어도, 이력서·자기소개서 작성법이나 면접 준비처럼 "
             "일반적으로 통용되는 내용은 아는 만큼 구체적으로 안내합니다. "
             "단, 계명대 고유의 프로그램명·모집 일정·지원 금액·담당 연락처는 근거 없이 단정하지 마세요."
         )
         if career_links:
             rule += " 대학 고유 정보는 아래 [외부 서비스 바로가기]에서 확인하도록 안내합니다."
-        parts.append(rule)
+        rules.append(rule)
+
+    if has_attachments or intent == ChatIntent.DOCUMENT:
+        rules.append(
+            "사용자가 이번 질문에 첨부한 이미지·문서 내용을 우선 근거로 사용합니다. "
+            "첨부에서 확인되는 내용만 사실로 답하고, 첨부·검색 근거에 없는 학사 정보는 지어내지 마세요. "
+            "첨부만으로 답할 때는 FAQ 출처 표시가 없어도 됩니다."
+        )
+
+    parts = [
+        "당신은 계명대학교 학생을 돕는 학사·취업 안내 챗봇입니다.",
+        "학생이 어려움을 털어놓으면 정보를 주기 전에 먼저 마음을 헤아리는 따뜻한 태도를 지킵니다.",
+        f"현재 시각은 {util.format_datetime(util.get_now())} 입니다.",
+        "",
+        "[답변 규칙]",
+    ]
+    parts += [f"{number}. {rule}" for number, rule in enumerate(rules, start=1)]
+
+    if counseling:
+        parts += ["", "[상담 안내]", counseling]
 
     if summary:
         parts += ["", "[이전 대화 요약]", summary.strip()]
@@ -736,6 +803,40 @@ def build_system_prompt(
         parts += ["", "[외부 서비스 바로가기]", career_links]
 
     return "\n".join(parts)
+
+
+def _emotion_rule(counseling: str) -> str:
+    """정서 지원(EMOTION) 의도에 붙일 응답 규칙을 만듭니다.
+
+    이 경로에는 검색 근거가 없습니다. 모델이 "근거가 없으니 모른다"로 빠지지 않도록,
+    이번 발화가 정보 요청이 아니라는 것과 무엇을 해야 하는지를 순서로 지시합니다.
+
+    상담 연결은 위기 신호가 보일 때만 하도록 조건을 붙입니다. 힘들다는 말마다 상담센터를
+    안내하면 "그런 얘기는 여기 말고 저기 가서 하라"는 신호로 읽혀 대화가 끊깁니다.
+
+    Args:
+        counseling (str): 설정된 상담 안내 문구 (`chatbot.counseling_contact`)
+
+    Returns:
+        str: 시스템 프롬프트에 넣을 규칙 문장
+    """
+
+    rule = (
+        "이번 발화는 정보 요청이 아니라 감정 표현입니다. 해결책을 먼저 내놓지 말고 다음 순서로 답합니다. "
+        "(1) 사용자가 말한 상황과 감정을 구체적으로 되짚으며 공감합니다. "
+        "\"많이 힘드시겠어요\" 한 줄로 끝내지 말고, 무엇 때문에 힘든지를 사용자의 말에서 그대로 짚어 주세요. "
+        "(2) 그렇게 느끼는 것이 당연하다고 인정합니다. 훈계·비교·\"힘내세요\" 같은 상투적인 마무리, "
+        "묻지 않은 조언은 하지 않습니다. "
+        "(3) 더 이야기하고 싶은지 부드럽게 물으며 대화를 열어 둡니다. "
+        "학사·취업 안내는 사용자가 원할 때만, 마지막에 짧게 덧붙입니다. "
+        "전체 3~5문장으로, 사무적인 안내문이 아니라 사람이 건네는 말투로 씁니다."
+    )
+    if counseling:
+        rule += (
+            " 다만 자해·자살 암시나 일상생활이 어려울 정도의 고통이 보이면, 공감한 뒤 혼자 감당하지 않도록 "
+            "아래 [상담 안내]의 연락처를 함께 알립니다. 진단하거나 치료 방법을 제안하지는 마세요."
+        )
+    return rule
 
 
 def _build_evidence_blocks(
@@ -1119,19 +1220,25 @@ async def generate(state: ChatGraphState, config: Optional[RunnableConfig] = Non
 
     _deps(config)
 
+    attachments = state.get("attachments") or []
     system_prompt = build_system_prompt(
         language=state.get("language"),
         summary=state.get("summary"),
         sources=state.get("faq_results") or [],
         regulation_sources=state.get("regulation_results") or [],
         intent=state.get("intent") or ChatIntent.UNKNOWN,
+        has_attachments=bool(attachments),
     )
 
     messages: list[dict] = [{"role": "system", "content": system_prompt}]
     messages += _budgeted_history(state.get("history") or [])
     messages.append({
         "role": "user",
-        "content": _truncate(state.get("query"), app_config.chatbot.query_max_chars),
+        "content": build_user_content(
+            query=state.get("query") or "",
+            resolved=attachments,
+            query_max_chars=app_config.chatbot.query_max_chars,
+        ),
     })
 
     return {"messages": messages, "answer": None, "needs_generation": True}
@@ -1174,6 +1281,18 @@ def _budgeted_history(history: list[dict]) -> list[dict]:
 
     selected.reverse()
     return selected
+
+async def handle_attachment_required(state: ChatGraphState, config: Optional[RunnableConfig] = None) -> dict:
+    """첨부 내용 문의인데 파일이 없을 때 안내 문구를 반환합니다."""
+
+    _deps(config)
+    return {
+        "answer": localized_message("attachment_required", state.get("language")),
+        "needs_generation": False,
+        "sources": [],
+        "unanswered_reason": UnansweredReason.AMBIGUOUS,
+    }
+
 
 async def handle_abuse(state: ChatGraphState, config: Optional[RunnableConfig] = None) -> dict:
     """비속어·목적 외 발화에 정해진 안내 문구를 반환합니다. (KAI-REQ-038)"""
@@ -1265,11 +1384,22 @@ def route_by_intent(state: ChatGraphState) -> str:
     """의도에 따라 다음 노드를 결정합니다."""
 
     intent = state.get("intent") or ChatIntent.UNKNOWN
+    has_attachments = bool(state.get("attachments"))
 
+    # 정서 지원은 지식베이스가 아니라 공감으로 답하는 경로입니다. 검색을 태우면 근거가 잡히지
+    # 않아 미응답 문구로 끊기고, 힘들다고 말한 학생이 "정보를 찾을 수 없다"는 답을 받게 됩니다.
+    # 어떤 분기보다 먼저 두어, 감정 표현이 정형 문구 경로로 새지 않도록 합니다.
+    if intent == ChatIntent.EMOTION:
+        return "generate"
     if intent == ChatIntent.ABUSE:
         return "handle_abuse"
     if intent == ChatIntent.PERSONAL:
         return "handle_personal"
+    # 첨부가 있으면 KB 검색 없이 첨부 내용을 근거로 생성합니다.
+    if has_attachments:
+        return "generate"
+    if intent == ChatIntent.DOCUMENT:
+        return "handle_attachment_required"
     if intent == ChatIntent.SMALL_TALK:
         return "generate"
     if intent in RETRIEVAL_INTENTS:
@@ -1319,6 +1449,7 @@ def build_chat_graph():
     graph.add_node("handle_ambiguous", handle_ambiguous)
     graph.add_node("handle_fallback", handle_fallback)
     graph.add_node("handle_personal", handle_personal)
+    graph.add_node("handle_attachment_required", handle_attachment_required)
     graph.add_node("summarize", summarize)
 
     # 의도 분류·검색 모두 대화 맥락이 복원된 질문을 써야 하므로 재작성을 가장 앞에 둡니다.
@@ -1333,6 +1464,7 @@ def build_chat_graph():
             "handle_abuse": "handle_abuse",
             "handle_ambiguous": "handle_ambiguous",
             "handle_personal": "handle_personal",
+            "handle_attachment_required": "handle_attachment_required",
         },
     )
     graph.add_conditional_edges(
@@ -1348,6 +1480,7 @@ def build_chat_graph():
     graph.add_edge("handle_ambiguous", "summarize")
     graph.add_edge("handle_fallback", "summarize")
     graph.add_edge("handle_personal", "summarize")
+    graph.add_edge("handle_attachment_required", "summarize")
     graph.add_edge("summarize", END)
 
     return graph.compile()
@@ -1368,6 +1501,7 @@ async def run_chat_graph(
     db_manager: DatabaseManager,
     user_info: TokenUserInfo,
     logger: Optional[Logger] = None,
+    attachments: Optional[list] = None,
 ) -> ChatGraphState:
     """챗봇 그래프를 실행하고 최종 상태를 반환합니다.
 
@@ -1382,6 +1516,7 @@ async def run_chat_graph(
         db_manager (DatabaseManager): 데이터베이스 매니저
         user_info (TokenUserInfo): 사용자 정보
         logger (Optional[Logger]): 로거 (Default: None)
+        attachments (Optional[list]): 해석된 첨부 목록 (`ResolvedAttachment`)
 
     Returns:
         ChatGraphState: 그래프 실행 결과 상태
@@ -1406,6 +1541,7 @@ async def run_chat_graph(
         "language_explicit": language is not None,
         "detected_language": None,
         "history": history or [],
+        "attachments": attachments or [],
         "summary": summary,
         "message_count": message_count,
         "intent": ChatIntent.UNKNOWN,

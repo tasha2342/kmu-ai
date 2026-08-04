@@ -8,6 +8,7 @@ import { Button, ErrorNotice, InlineNotice, Select, Spinner } from '../../compon
 import { chatbot } from '../../lib/endpoints.js'
 import { streamChatMessage } from '../../lib/chatStream.js'
 import { useAuth } from '../../lib/useAuth.js'
+import { describeError } from '../../lib/api.js'
 import { CHAT_INTENT_LABEL, DEFAULT_LANGUAGE, LANGUAGES, SAMPLE_QUESTIONS } from '../../lib/constants.js'
 import { formatMillis, formatRelative, formatTime } from '../../lib/format.js'
 
@@ -25,6 +26,37 @@ import { formatMillis, formatRelative, formatTime } from '../../lib/format.js'
  * 서버 기준이 이보다 짧으면 서버가 먼저 세션을 종료시키므로, 이 값이 서버 정책을 느슨하게 만들지는 않습니다.
  */
 const RESUME_MAX_IDLE_MINUTES = 12 * 60
+
+const MAX_ATTACHMENTS = 5
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+const ATTACHMENT_ACCEPT =
+  '.png,.jpg,.jpeg,.webp,.gif,.pdf,.doc,.docx,.txt,.hwp,.hwpx,.md,image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain,text/markdown'
+
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif'])
+const DOCUMENT_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'txt', 'hwp', 'hwpx', 'md'])
+
+function fileExtension(name) {
+  const parts = (name || '').split('.')
+  return parts.length > 1 ? parts.pop().toLowerCase() : ''
+}
+
+function isAllowedAttachmentFile(file) {
+  if (!file || file.size <= 0) return { ok: false, message: '파일이 비어있습니다.' }
+  if (file.size > MAX_ATTACHMENT_BYTES) {
+    return { ok: false, message: '파일 크기는 10MB 이하여야 합니다.' }
+  }
+  const ext = fileExtension(file.name)
+  if (!IMAGE_EXTENSIONS.has(ext) && !DOCUMENT_EXTENSIONS.has(ext)) {
+    return { ok: false, message: '지원하지 않는 파일 형식입니다.' }
+  }
+  return { ok: true }
+}
+
+function isImageAttachment(item) {
+  if (item?.kind === 'image') return true
+  if (item?.file_type?.startsWith('image/')) return true
+  return IMAGE_EXTENSIONS.has(fileExtension(item?.file_name || item?.name))
+}
 
 /**
  * 세션 목록에서 자동으로 이어받을 세션을 고릅니다. 대상이 없으면 null입니다.
@@ -72,6 +104,9 @@ export default function ChatPage() {
   // 'auto'면 서버가 질문의 언어를 감지해 그 언어로 답합니다. 직접 고른 언어는 감지보다 우선합니다.
   const [language, setLanguage] = useState(DEFAULT_LANGUAGE)
   const [input, setInput] = useState('')
+  const [attachments, setAttachments] = useState([])
+  const [uploading, setUploading] = useState(false)
+  const [attachError, setAttachError] = useState(null)
   const [streaming, setStreaming] = useState(false)
   const [sendError, setSendError] = useState(null)
   const [notice, setNotice] = useState(null)
@@ -87,6 +122,7 @@ export default function ChatPage() {
   const abortRef = useRef(null)
   const scrollRef = useRef(null)
   const textareaRef = useRef(null)
+  const fileInputRef = useRef(null)
   // 로그인 1회당 자동 복원은 한 번만 시도합니다. (메시지 전송 후의 목록 갱신 등으로 다시 끼어들면 안 됨)
   const autoResumeDoneRef = useRef(false)
   // 목록을 기다리는 사이에 사용자가 먼저 조작했으면 자동 복원을 포기합니다.
@@ -149,6 +185,7 @@ export default function ChatPage() {
           id: message.id,
           role: message.role,
           content: message.content,
+          attachments: message.attachments ?? [],
           sources: message.sources ?? [],
           detected_intent: message.detected_intent,
           is_answered: message.is_answered,
@@ -228,6 +265,11 @@ export default function ChatPage() {
     abortRef.current?.abort()
     setActiveId(null)
     setMessages([])
+    setAttachments((prev) => {
+      prev.forEach((item) => item.previewUrl && URL.revokeObjectURL(item.previewUrl))
+      return []
+    })
+    setAttachError(null)
     setSendError(null)
     setHistoryError(null)
     setHistoryLoading(false)
@@ -258,9 +300,73 @@ export default function ChatPage() {
 
   // ===== 메시지 전송 =====
 
+  const removeAttachment = (localId) => {
+    setAttachments((prev) => {
+      const target = prev.find((item) => item.localId === localId)
+      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl)
+      return prev.filter((item) => item.localId !== localId)
+    })
+    setAttachError(null)
+  }
+
+  const onPickFiles = async (event) => {
+    const files = Array.from(event.target.files || [])
+    event.target.value = ''
+    if (!files.length || streaming || uploading) return
+
+    if (!hasToken) {
+      setAttachError('로그인이 필요합니다. 우측 상단의 로그인 버튼을 눌러주세요.')
+      return
+    }
+
+    const remaining = MAX_ATTACHMENTS - attachments.length
+    if (remaining <= 0) {
+      setAttachError(`첨부는 최대 ${MAX_ATTACHMENTS}개까지 가능합니다.`)
+      return
+    }
+
+    const selected = files.slice(0, remaining)
+    if (files.length > remaining) {
+      setAttachError(`첨부는 최대 ${MAX_ATTACHMENTS}개까지 가능합니다.`)
+    } else {
+      setAttachError(null)
+    }
+
+    setUploading(true)
+    try {
+      for (const file of selected) {
+        const check = isAllowedAttachmentFile(file)
+        if (!check.ok) {
+          setAttachError(check.message)
+          continue
+        }
+
+        const formData = new FormData()
+        formData.append('file', file)
+        try {
+          const meta = await chatbot.uploadAttachment(formData)
+          const previewUrl = isImageAttachment(meta) ? URL.createObjectURL(file) : null
+          setAttachments((prev) => [
+            ...prev,
+            {
+              localId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              previewUrl,
+              ...meta,
+            },
+          ])
+        } catch (error) {
+          setAttachError(describeError(error) || '파일 업로드에 실패했습니다.')
+        }
+      }
+    } finally {
+      setUploading(false)
+    }
+  }
+
   const send = async (rawText) => {
     const text = (rawText ?? input).trim()
-    if (!text || streaming) return
+    const pendingAttachments = attachments.map(({ localId, previewUrl, ...meta }) => meta)
+    if ((!text && pendingAttachments.length === 0) || streaming || uploading) return
 
     if (!hasToken) {
       setSendError({
@@ -280,7 +386,14 @@ export default function ChatPage() {
     historySeqRef.current += 1
     setHistoryLoading(false)
 
+    const sentAttachments = attachments.map(({ localId, previewUrl, ...meta }) => ({
+      ...meta,
+      previewUrl,
+    }))
+
     setInput('')
+    setAttachments([])
+    setAttachError(null)
     setSendError(null)
     setNotice(null)
 
@@ -289,7 +402,13 @@ export default function ChatPage() {
 
     setMessages((prev) => [
       ...prev,
-      { id: localUserId, role: 'user', content: text, created_at: new Date().toISOString() },
+      {
+        id: localUserId,
+        role: 'user',
+        content: text,
+        attachments: sentAttachments,
+        created_at: new Date().toISOString(),
+      },
       { id: localBotId, role: 'assistant', content: '', sources: [], streaming: true },
     ])
     setStreaming(true)
@@ -318,7 +437,12 @@ export default function ChatPage() {
 
     try {
       await streamChatMessage(
-        { message: text, session_id: sessionId ?? undefined, language },
+        {
+          message: text,
+          session_id: sessionId ?? undefined,
+          language,
+          attachments: pendingAttachments.length ? pendingAttachments : undefined,
+        },
         {
           onSession: (data) => {
             if (data.session_id) {
@@ -498,7 +622,42 @@ export default function ChatPage() {
 
         <div className="border-t border-gray-200 bg-white px-3 py-3 sm:px-5">
           <div className="mx-auto w-full max-w-3xl">
+            {(attachments.length > 0 || attachError) && (
+              <div className="mb-2 space-y-1.5">
+                {attachments.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {attachments.map((item) => (
+                      <AttachmentChip
+                        key={item.localId}
+                        item={item}
+                        onRemove={() => removeAttachment(item.localId)}
+                        removable
+                      />
+                    ))}
+                  </div>
+                )}
+                {attachError && <p className="text-[11px] text-rose-600">{attachError}</p>}
+              </div>
+            )}
             <div className="flex items-end gap-2 rounded-xl border border-gray-300 bg-white px-3 py-2 focus-within:border-kmu-600 focus-within:ring-1 focus-within:ring-kmu-600">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept={ATTACHMENT_ACCEPT}
+                multiple
+                className="hidden"
+                onChange={onPickFiles}
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={streaming || uploading || attachments.length >= MAX_ATTACHMENTS}
+                className="mb-0.5 shrink-0 rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-kmu-700 disabled:cursor-not-allowed disabled:opacity-40"
+                aria-label="파일 첨부"
+                title="이미지·문서 첨부"
+              >
+                <PaperclipIcon className="h-5 w-5" />
+              </button>
               <textarea
                 ref={textareaRef}
                 rows={1}
@@ -514,13 +673,18 @@ export default function ChatPage() {
                   중지
                 </Button>
               ) : (
-                <Button size="sm" onClick={() => send()} disabled={!input.trim()}>
-                  전송
+                <Button
+                  size="sm"
+                  onClick={() => send()}
+                  disabled={(!input.trim() && attachments.length === 0) || uploading}
+                >
+                  {uploading ? '업로드 중…' : '전송'}
                 </Button>
               )}
             </div>
             <p className="mt-1.5 text-[11px] text-gray-400">
-              Enter로 전송, Shift+Enter로 줄바꿈 · AI가 생성한 답변이므로 중요한 사항은 담당 부서에 확인해주세요.
+              Enter로 전송, Shift+Enter로 줄바꿈 · 이미지·문서 첨부 가능(최대 {MAX_ATTACHMENTS}개, 10MB) · AI가
+              생성한 답변이므로 중요한 사항은 담당 부서에 확인해주세요.
             </p>
           </div>
         </div>
@@ -566,12 +730,63 @@ function Intro({ hasToken, onPick, onOpenLogin }) {
 }
 
 function UserBubble({ message }) {
+  const items = message.attachments ?? []
   return (
     <div className="flex justify-end">
       <div className="max-w-[85%] rounded-2xl rounded-br-md bg-kmu-800 px-4 py-2.5 text-sm leading-relaxed text-white sm:max-w-[75%]">
-        <p className="whitespace-pre-wrap break-words">{message.content}</p>
+        {items.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {items.map((item) => (
+              <AttachmentChip key={item.attachment_id || item.file_name} item={item} tone="dark" />
+            ))}
+          </div>
+        )}
+        {message.content ? (
+          <p className="whitespace-pre-wrap break-words">{message.content}</p>
+        ) : null}
       </div>
     </div>
+  )
+}
+
+function AttachmentChip({ item, onRemove, removable = false, tone = 'light' }) {
+  const image = isImageAttachment(item)
+  const dark = tone === 'dark'
+  return (
+    <span
+      className={`inline-flex max-w-full items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] ${
+        dark ? 'bg-white/15 text-white' : 'border border-gray-200 bg-gray-50 text-gray-700'
+      }`}
+    >
+      {image && item.previewUrl ? (
+        <img src={item.previewUrl} alt="" className="h-8 w-8 rounded object-cover" />
+      ) : (
+        <span className={dark ? 'text-white/80' : 'text-gray-400'}>{image ? 'IMG' : 'DOC'}</span>
+      )}
+      <span className="truncate">{item.file_name}</span>
+      {removable && (
+        <button
+          type="button"
+          onClick={onRemove}
+          className={`shrink-0 rounded px-1 ${dark ? 'hover:bg-white/20' : 'hover:bg-gray-200'}`}
+          aria-label={`${item.file_name} 제거`}
+        >
+          ×
+        </button>
+      )}
+    </span>
+  )
+}
+
+function PaperclipIcon({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M21.44 11.05l-8.49 8.49a5.25 5.25 0 01-7.42-7.42l8.48-8.49a3.5 3.5 0 014.95 4.95l-8.48 8.49a1.75 1.75 0 01-2.48-2.47l7.78-7.79"
+      />
+    </svg>
   )
 }
 
