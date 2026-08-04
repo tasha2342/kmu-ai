@@ -413,6 +413,7 @@ async def stream_chat_completion(
     db_manager: DatabaseManager,
     chat_template_kwargs: Optional[dict] = None,
     usage_source: str = "internal",
+    max_tokens: Optional[int] = None,
 ) -> AsyncGenerator[str, None]:
     """모델을 조회해 litellm으로 스트리밍 완료를 요청하고, 텍스트 델타만 yield합니다.
 
@@ -443,6 +444,8 @@ async def stream_chat_completion(
     merged_kwargs = build_chat_template_kwargs(model.provider, chat_template_kwargs)
     if merged_kwargs:
         completion_params["chat_template_kwargs"] = merged_kwargs
+    if max_tokens is not None:
+        completion_params["max_tokens"] = max_tokens
 
     request_id = f"chatcmpl-{util.generate_id(k=16)}"
     start_time = time.time()

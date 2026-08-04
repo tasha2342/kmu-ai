@@ -1,8 +1,6 @@
 import orjson
 import asyncio
 
-from datetime import timedelta
-
 from logging import Logger
 
 from typing import Any, AsyncGenerator, Optional
@@ -15,7 +13,7 @@ from fastapi import APIRouter, Depends, File, Path, Query, UploadFile
 
 from sse_starlette.sse import EventSourceResponse
 
-from app.config import config, env
+from app.config import config
 from app.exceptions.api_exception import DEFAULT_EXCEPTION_RESPONSES_WITH_FORBIDDEN
 from app.payloads.v1.chat import (
     ChatAttachment,
@@ -66,6 +64,7 @@ from app.utils.chat_attachments import (
     truncate_text,
 )
 from app.utils.chat_graph import (
+    EMOTION_GENERATION_MAX_TOKENS,
     get_retrieval_collection_name,
     localized_message,
     run_chat_graph,
@@ -159,26 +158,31 @@ def _build_title(message: str) -> str:
         title = f"{title[:TITLE_MAX_LENGTH]}..."
     return title or "새 대화"
 
-def _is_idle_expired(session: db_items.ChatSession) -> bool:
-    """미입력 자동 종료 대상인지 확인합니다. (KAI-REQ-039)
+async def _reactivate_session(
+    db_manager: DatabaseManager,
+    session: db_items.ChatSession,
+) -> db_items.ChatSession:
+    """종료된 세션을 다시 진행 상태로 되돌립니다.
 
-    환경 변수 `ENABLE_SESSION_IDLE_TIMEOUT`이 false면 항상 False를 반환합니다.
-    기준 시간은 `SESSION_IDLE_TIMEOUT_MINUTES`(분)입니다.
+    미입력 자동 종료(`idle_closed`)나 사용자 종료(`closed`) 이후에도
+    같은 세션 ID로 질문이 오면 기존 대화 이력을 이어서 답변할 수 있게 합니다.
 
     Args:
-        session (db_items.ChatSession): 세션 정보
+        db_manager (DatabaseManager): 데이터베이스 매니저
+        session (db_items.ChatSession): 재개할 세션
 
     Returns:
-        bool: 자동 종료 대상 여부
+        db_items.ChatSession: 갱신된 세션 정보
     """
 
-    if not env.ENABLE_SESSION_IDLE_TIMEOUT:
-        return False
-
-    timeout = env.SESSION_IDLE_TIMEOUT_MINUTES
-    if not timeout or timeout <= 0:
-        return False
-    return session.last_active_at + timedelta(minutes=timeout) < util.get_now()
+    now = util.get_now()
+    query = (db_models.ChatSession.update(
+        status=ChatSessionStatus.ACTIVE,
+        last_active_at=now,
+        updated_at=now,
+    ).where(db_models.ChatSession.id == session.id))
+    await db_manager.execute_query(query)
+    return await _get_session(db_manager, session.id)
 
 
 async def _get_session(db_manager: DatabaseManager, session_id: UUID) -> Optional[db_items.ChatSession]:
@@ -321,6 +325,8 @@ async def _stream_answer(
 
     outcome["model_name"] = config.chatbot.text_model
     emitted = False
+    intent = state.get("intent")
+    max_tokens = EMOTION_GENERATION_MAX_TOKENS if intent == ChatIntent.EMOTION else None
 
     try:
         async for delta in stream_chat_completion(
@@ -329,6 +335,7 @@ async def _stream_answer(
             user_info=user_info,
             db_manager=db_manager,
             usage_source="chatbot",
+            max_tokens=max_tokens,
         ):
             emitted = True
             yield delta
@@ -863,8 +870,8 @@ async def delete_chat_session(
 async def _resolve_attachments(
     attachments: Optional[list[ChatAttachment]],
     user_name: str,
-    s3_manager: S3Manager,
     masking_rules,
+    logger: Logger,
 ) -> tuple[Optional[list[ResolvedAttachment]], Optional[str]]:
     """메시지 첨부를 S3에서 가져와 모델 입력용으로 해석합니다.
 
@@ -874,6 +881,17 @@ async def _resolve_attachments(
 
     if not attachments:
         return [], None
+
+    # S3 연결은 첨부가 있을 때만 만듭니다. `S3Manager.__init__`이 `head_bucket`을 호출하는데,
+    # S3가 미배포인 환경(configs/config.yaml의 s3 블록은 placeholder)에서는 이 호출이
+    # botocore 연결 타임아웃으로 5분 넘게 걸립니다. 이 생성을 호출부에 두면 **첨부가 없는
+    # 일반 질문까지 전부** 그 대기에 걸려 챗봇이 통째로 멈춥니다. (실측 311초 후 에러)
+    # 생성자가 예외를 던지면 `get_s3_manager()`의 캐시 대입도 일어나지 않아 매 요청 반복됩니다.
+    try:
+        s3_manager = get_s3_manager()
+    except Exception:
+        logger.exception("S3에 연결할 수 없어 첨부를 해석하지 못했습니다.")
+        return None, "attachment_unavailable"
 
     resolved: list[ResolvedAttachment] = []
     evidence_limit = config.chatbot.evidence_max_chars
@@ -1009,7 +1027,8 @@ async def upload_chat_attachment(
         "(KAI-REQ-037/038/040)  \n"
         "- 개인 학적·성적 등은 학내 연계 API가 제공되기 전까지 안내 문구와 바로가기만 제공하며, "
         "개인 데이터를 임의로 생성하지 않습니다. (KAI-REQ-035)  \n"
-        "- 미입력으로 자동 종료 대상이 된 세션은 종료 처리 후 새 세션에서 답변합니다. (KAI-REQ-039)  \n"
+        "- 미입력으로 자동 종료된 세션(`idle_closed`)이나 사용자가 종료한 세션(`closed`)에도 "
+        "질문을 보내면 같은 세션을 재개해 기존 대화 이력을 바탕으로 답변합니다. (KAI-REQ-039)  \n"
         "- 벡터 검색이나 모델을 사용할 수 없는 경우에도 오류 대신 안내 문구로 응답합니다.  \n"
         "  \n"
         "**`stream=true` (기본값)**: `text/event-stream`으로 응답합니다.  \n"
@@ -1094,8 +1113,6 @@ async def send_chat_message(
 ):
     started = util.get_now()
     notice: Optional[str] = None
-    # 미입력 자동 종료가 일어났는지 여부 (KAI-REQ-039). 안내 문구는 언어 판정 후에 만듭니다.
-    idle_closed = False
 
     # 세션 확인 또는 생성
     if payload.session_id:
@@ -1117,30 +1134,18 @@ async def send_chat_message(
             return ForbiddenResponse(message="해당 대화 세션에 접근할 권한이 없습니다.")
 
         if session.status != ChatSessionStatus.ACTIVE:
-            return BadRequestResponse(
-                message="이미 종료된 대화 세션입니다. 새로운 대화를 시작해 주세요.",
-                target=f"session_id={payload.session_id}"
-            )
-
-        # 미입력 자동 종료 처리 (KAI-REQ-039)
-        if _is_idle_expired(session):
-            now = util.get_now()
-            query = (db_models.ChatSession.update(
-                status=ChatSessionStatus.IDLE_CLOSED,
-                updated_at=now,
-            ).where(db_models.ChatSession.id == session.id))
-            await db_manager.execute_query(query)
-
-            logger.info(f"미입력으로 대화 세션이 자동 종료되었습니다. (session_id={session.id})")
-
-            # 안내 문구는 응답 언어를 판정한 뒤에 채웁니다. (그래프 실행 후 아래에서 설정)
-            idle_closed = True
-            session = await _create_session(
-                db_manager=db_manager,
-                user_name=session.user_name,
-                language=payload.language or session.language,
-                profile=session.profile,
-            )
+            if session.status in (ChatSessionStatus.IDLE_CLOSED, ChatSessionStatus.CLOSED):
+                previous_status = session.status.value
+                session = await _reactivate_session(db_manager, session)
+                logger.info(
+                    f"종료된 대화 세션이 재개되었습니다. "
+                    f"(session_id={session.id}, previous_status={previous_status})"
+                )
+            else:
+                return BadRequestResponse(
+                    message="이미 종료된 대화 세션입니다. 새로운 대화를 시작해 주세요.",
+                    target=f"session_id={payload.session_id}"
+                )
     else:
         session = await _create_session(
             db_manager=db_manager,
@@ -1162,12 +1167,11 @@ async def send_chat_message(
 
     # 첨부 해석 (이미지 data URI / 문서 파싱 텍스트). DB에는 메타만 저장합니다.
     stored_attachments = attachments_to_storage(payload.attachments)
-    s3_manager = get_s3_manager()
     resolved_attachments, attachment_error_key = await _resolve_attachments(
         attachments=payload.attachments,
         user_name=user_info.username,
-        s3_manager=s3_manager,
         masking_rules=masking_rules,
+        logger=logger,
     )
 
     # 사용자 메시지 저장
@@ -1225,8 +1229,6 @@ async def send_chat_message(
 
     # 자동 감지 모드에서는 그래프가 판정한 언어가 이번 턴의 응답 언어입니다.
     language = state.get("language") or language or Language.KO
-    if idle_closed:
-        notice = localized_message("idle_closed", language)
 
     assistant_message_id = uuid4()
     intent: ChatIntent = state.get("intent") or ChatIntent.UNKNOWN

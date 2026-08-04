@@ -15,8 +15,8 @@ import { formatMillis, formatRelative, formatTime } from '../../lib/format.js'
 /**
  * 자동으로 이어받을 수 있는 마지막 활동 시각의 상한(분)입니다. (KAI-REQ-041 세션 기억)
  *
- * 서버는 `SESSION_IDLE_TIMEOUT_MINUTES`(기본 30분)를 넘긴 세션을 `idle_closed`로 바꾸므로(KAI-REQ-039)
- * 오래된 세션은 대부분 아래 `status === 'active'` 검사에서 걸러집니다.
+ * 서버는 `SESSION_IDLE_TIMEOUT_MINUTES`(기본 30분)를 넘긴 세션을 `idle_closed`로 바꾸지만(KAI-REQ-039),
+ * 이후 같은 세션으로 질문을 보내면 서버가 `active`로 재개해 기존 이력을 이어갑니다.
  * 그럼에도 상한을 따로 두는 이유는 두 가지입니다.
  *  1. `ENABLE_SESSION_IDLE_TIMEOUT=false`면 세션이 계속 `active`로 남습니다. 이때 며칠 전 대화를
  *     아무 말 없이 이어받으면 사용자가 지금 대화의 맥락을 오해합니다.
@@ -70,9 +70,10 @@ function pickResumableSession(sessions) {
   let pickedAt = 0
 
   for (const session of sessions ?? []) {
-    // 종료된 세션(closed / idle_closed)은 제외합니다. 서버가 종료된 세션으로의 전송을 400으로 막기 때문에
-    // 복원해도 대화를 이어갈 수 없습니다. (KAI-REQ-039)
-    if (session?.status !== 'active') continue
+    // 사용자가 직접 종료한 세션은 자동 이어받지 않습니다.
+    if (session?.status === 'closed') continue
+    // `idle_closed`는 미입력 자동 종료 상태이지만, 메시지 전송 시 서버가 재개합니다.
+    if (session?.status !== 'active' && session?.status !== 'idle_closed') continue
     // 메시지가 없는 세션은 이어받을 맥락이 없어 새 대화와 다르지 않습니다.
     if ((session.message_count ?? 0) <= 0) continue
 
@@ -378,8 +379,7 @@ export default function ChatPage() {
     }
 
     // 이 시점부터는 사용자가 대화를 시작한 것이므로 자동 복원이 끼어들지 않습니다.
-    // 이어받기 안내도 내립니다. 유휴로 세션이 자동 종료되면 서버가 새 세션을 만들어 주므로(KAI-REQ-039)
-    // 안내를 남겨두면 이미 끊긴 대화를 이어가는 중이라고 잘못 읽힐 수 있습니다.
+    // 이어받기 안내도 내립니다. 사용자가 직접 입력을 시작했으므로 자동 복원 안내는 더 이상 맞지 않습니다.
     userActedRef.current = true
     setResumedSession(null)
     // 진행 중인 이력 요청이 방금 보낸 메시지를 덮어쓰지 않게 합니다.
@@ -446,13 +446,6 @@ export default function ChatPage() {
         {
           onSession: (data) => {
             if (data.session_id) {
-              // 유휴로 이전 세션이 자동 종료되면 서버가 새 세션을 만들어 답변합니다. (KAI-REQ-039)
-              // 이때 화면에 남아 있는 이전 세션의 대화는 새 세션의 이력이 아니므로 방금 보낸 말풍선만 남깁니다.
-              if (sessionId && data.session_id !== sessionId) {
-                setMessages((prev) =>
-                  prev.filter((message) => message.id === localUserId || message.id === localBotId)
-                )
-              }
               sessionId = data.session_id
               setActiveId(data.session_id)
             }
