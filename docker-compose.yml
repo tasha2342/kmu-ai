@@ -83,6 +83,40 @@ services:
     networks:
       - jdone-network
 
+  # DB 조회용 웹 콘솔. 마스킹 저장값 검증처럼 테이블을 눈으로 확인할 때 쓴다.
+  # 애플리케이션 동작에는 관여하지 않으므로 운영에서는 빼거나 외부 노출을 막을 것.
+  pgadmin:
+    container_name: kmu-ai-pgadmin
+    image: dpage/pgadmin4:8.14
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # 로그인 계정. .env에서 덮어쓸 수 있다.
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@jdone.co.kr}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-pgadmin}
+      # 저장된 서버 비밀번호를 꺼낼 때 마스터 비밀번호를 따로 묻지 않게 한다.
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+      # 컨테이너 내부 포트. 호스트 5050과 매핑한다.
+      PGADMIN_LISTEN_PORT: "80"
+    volumes:
+      # 서버 등록 정보를 미리 넣어 둔다. pgadmin-data 볼륨이 빈 최초 기동에만 반영되므로,
+      # 내용을 바꾼 뒤 다시 적용하려면 볼륨을 지워야 한다.
+      # 접속 대상은 반드시 컨테이너명(kmu-ai-postgres)으로 둔다. jdone-network는 프로젝트
+      # 공유 네트워크라 서비스명 postgres는 다른 프로젝트 DB로 붙을 수 있다.
+      - ./docker/pgadmin/servers.json:/pgadmin4/servers.json:ro
+      - pgadmin-data:/var/lib/pgadmin
+    ports:
+      - 5050:80
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: 10
+    networks:
+      - jdone-network
+
   keycloak-postgres: # Keycloak 전용 DB (kmu-ai 앱 DB(5435)와 별개)
     image: postgres:16-alpine
     container_name: kmu-ai-keycloak-postgres
@@ -197,6 +231,113 @@ services:
     networks:
       - jdone-network
 
+  # ─── Milvus (pgvector → Milvus 마이그레이션용 벡터 DB) ─────────────────────
+  # 공식 standalone 구성: etcd(메타) + MinIO(오브젝트) + milvus + Attu(관리 UI).
+  # 앱 첨부용 `minio`(kmu-ai-minio)와는 별개다. Milvus가 벡터/인덱스 blob을 여기에 둔다.
+  # jdone-network는 프로젝트 공유망이라 ETCD/MINIO/MILVUS 주소는 반드시 컨테이너명을 쓴다.
+
+  milvus-etcd:
+    container_name: kmu-ai-milvus-etcd
+    image: quay.io/coreos/etcd:v3.5.25
+    restart: unless-stopped
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    volumes:
+      - milvus-etcd-data:/etcd
+    # 호스트에 이미 etcd(2379/2380)가 떠 있을 수 있어 포트를 노출하지 않는다.
+    # advertise는 컨테이너명으로 두어 공유 네트워크에서 서비스명 충돌을 피한다.
+    command: >
+      etcd
+      -advertise-client-urls=http://kmu-ai-milvus-etcd:2379
+      -listen-client-urls=http://0.0.0.0:2379
+      --data-dir=/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - jdone-network
+
+  # Milvus 전용 오브젝트 스토리지. 앱 S3(`minio` / kmu-ai-minio)와 분리한다.
+  # 호스트 포트는 열지 않는다. (앱 MinIO가 이미 9005/9006을 쓰고, Milvus만 내부 접속하면 됨)
+  milvus-minio:
+    container_name: kmu-ai-milvus-minio
+    image: minio/minio:RELEASE.2024-05-28T17-19-04Z
+    restart: unless-stopped
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    volumes:
+      - milvus-minio-data:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - jdone-network
+
+  milvus:
+    container_name: kmu-ai-milvus
+    image: milvusdb/milvus:v3.0.0
+    restart: unless-stopped
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      MINIO_REGION: us-east-1
+      ETCD_ENDPOINTS: kmu-ai-milvus-etcd:2379
+      MINIO_ADDRESS: kmu-ai-milvus-minio:9000
+    volumes:
+      - milvus-data:/var/lib/milvus
+    ports:
+      - 19530:19530 # gRPC (pymilvus / 앱 접속)
+      - 9091:9091   # healthz + Milvus WebUI (http://localhost:9091/webui/)
+    depends_on:
+      milvus-etcd:
+        condition: service_healthy
+      milvus-minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: 10
+    networks:
+      - jdone-network
+
+  # Milvus 관리자 GUI (Attu). pgAdmin과 같이 앱 동작에는 관여하지 않는다.
+  # 브라우저: http://localhost:8004  → 연결 주소는 컨테이너망 기준 kmu-ai-milvus:19530
+  attu:
+    container_name: kmu-ai-attu
+    image: zilliz/attu:v2.5
+    restart: unless-stopped
+    depends_on:
+      milvus:
+        condition: service_healthy
+    environment:
+      MILVUS_URL: kmu-ai-milvus:19530
+    ports:
+      - 8004:3000
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: 10
+    networks:
+      - jdone-network
+
 networks:
   jdone-network:
     name: jdone-network
@@ -210,3 +351,11 @@ volumes:
     name: kmu-ai-keycloak-postgres-data
   minio-data:
     name: kmu-ai-minio-data
+  pgadmin-data:
+    name: kmu-ai-pgadmin-data
+  milvus-etcd-data:
+    name: kmu-ai-milvus-etcd-data
+  milvus-minio-data:
+    name: kmu-ai-milvus-minio-data
+  milvus-data:
+    name: kmu-ai-milvus-data

@@ -8,6 +8,7 @@ from peewee import fn, Expression, SQL
 from app.utils.database import get_db_manager
 from app.utils.logger import get_logger
 import app.models.database as db_models
+from app.utils import milvus_store as milvus_store_mod
 
 
 try:
@@ -289,13 +290,17 @@ def fuse_hybrid_scores(
 
 
 class VectorStoreManager:
-    """벡터 저장소 관리 클래스 (PostgreSQL pgvector)
+    """벡터 저장소 관리 클래스 (PostgreSQL pgvector + 선택적 Milvus)
 
-    범용 문서 RAG의 벡터를 별도 벡터 DB 없이 PostgreSQL에 저장합니다.
-    컬렉션은 물리적으로 분리되지 않고, 차원별 테이블(`document_chunks_{dim}`) 안에서
+    범용 문서 RAG의 벡터를 저장합니다. 컬렉션은 물리적으로 분리되지 않고,
+    차원별 테이블(`document_chunks_{dim}`) / Milvus 컬렉션 안에서
     `collection_name` 컬럼으로 구분됩니다.
 
-    거리 측정은 코사인으로 고정입니다. (HNSW 인덱스가 `vector_cosine_ops`로 생성됨)
+    `config.milvus.enabled=False`(기본): dense 읽기/쓰기는 pgvector만.
+    `True`: dense 읽기=Milvus, 쓰기=Milvus+PG dual-write.
+    hybrid의 어휘(FTS)는 항상 Postgres `content` GIN을 쓴다.
+
+    거리 측정은 코사인으로 고정입니다.
     """
 
     def _get_model(self, vector_size: int) -> type[db_models.BaseDocumentChunk]:
@@ -464,10 +469,14 @@ class VectorStoreManager:
 
         model = self._get_model(vector_size)
 
+        if milvus_store_mod.is_milvus_enabled():
+            await milvus_store_mod.ensure_document_collection_async(vector_size)
+
         logger.info(
             "컬렉션이 준비되었습니다. "
             f"(collection={collection_name}, vector_size={vector_size}, "
-            f"table={model._meta.table_name}, distance={DEFAULT_DISTANCE})"
+            f"table={model._meta.table_name}, distance={DEFAULT_DISTANCE}, "
+            f"milvus={milvus_store_mod.is_milvus_enabled()})"
         )
 
     async def collection_exists_async(self, collection_name: str) -> bool:
@@ -509,6 +518,9 @@ class VectorStoreManager:
             query = model.delete().where(model.collection_name == collection_name)
             deleted += await db_manager.execute_query(query, timeout=BULK_QUERY_TIMEOUT) or 0
 
+        if milvus_store_mod.is_milvus_enabled():
+            await milvus_store_mod.delete_document_collection_async(collection_name)
+
         logger.info(f"컬렉션이 삭제되었습니다. (collection={collection_name}, chunks={deleted})")
 
     async def upsert_points_async(self, collection_name: str, points: list[dict[str, Any]]):
@@ -530,13 +542,15 @@ class VectorStoreManager:
 
         # 한 컬렉션은 한 차원만 쓰지만, 방어적으로 차원별로 나눠 담는다
         rows_by_model: dict[type[db_models.BaseDocumentChunk], list[dict[str, Any]]] = {}
+        points_by_size: dict[int, list[dict[str, Any]]] = {}
         for point in points:
             vector = point.get("vector") or []
             payload = point.get("payload") or {}
             model = self._get_model(len(vector))
+            point_id = point.get("id") or uuid.uuid4()
 
             rows_by_model.setdefault(model, []).append({
-                "id": point.get("id") or uuid.uuid4(),
+                "id": point_id,
                 "collection_name": collection_name,
                 "document_id": payload.get("document_id"),
                 "chunk_index": payload.get("chunk_index", 0),
@@ -548,6 +562,11 @@ class VectorStoreManager:
                     if key not in PAYLOAD_COLUMN_KEYS
                 } or None,
                 "embedding": vector,
+            })
+            points_by_size.setdefault(len(vector), []).append({
+                "id": str(point_id),
+                "vector": vector,
+                "payload": payload,
             })
 
         for model, rows in rows_by_model.items():
@@ -569,6 +588,13 @@ class VectorStoreManager:
                              ],
                          ))
                 await db_manager.execute_query(query, timeout=BULK_QUERY_TIMEOUT)
+
+        # milvus.enabled면 dual-write. PG는 항상 써서 롤백·어휘검색 원천을 유지한다.
+        if milvus_store_mod.is_milvus_enabled():
+            for vector_size, milvus_points in points_by_size.items():
+                await milvus_store_mod.upsert_document_chunks_async(
+                    vector_size, collection_name, milvus_points,
+                )
 
         logger.debug(f"{len(points)}개의 포인트가 저장되었습니다. (collection={collection_name})")
 
@@ -599,7 +625,20 @@ class VectorStoreManager:
             ValueError: 지원하지 않는 차원의 검색 벡터인 경우
         """
 
-        model = self._get_model(len(query_vector))
+        vector_size = len(query_vector)
+        self._get_model(vector_size)
+
+        if milvus_store_mod.is_milvus_enabled():
+            return await milvus_store_mod.search_document_chunks_async(
+                vector_size,
+                collection_name,
+                query_vector,
+                limit=limit,
+                score_threshold=score_threshold,
+                filter_conditions=filter_conditions,
+            )
+
+        model = self._get_model(vector_size)
         db_manager = await get_db_manager()
 
         distance = model.embedding.cosine_distance(query_vector)
@@ -644,9 +683,9 @@ class VectorStoreManager:
 
         **동작**
 
-        1. dense: pgvector 코사인 거리(`<=>`) 상위 `limit * candidate_multiplier`건
+        1. dense: pgvector 또는 Milvus(`milvus.enabled`) 코사인 상위 `limit * candidate_multiplier`건
         2. 어휘: `to_tsvector('simple', content) @@ plainto_tsquery('simple', 질의)` 매칭 후
-           `ts_rank_cd` 상위 동수
+           `ts_rank_cd` 상위 동수 (**항상 Postgres**)
         3. 두 결과를 각각 min-max 정규화한 뒤 `0.55 * dense + 0.45 * lexical`로 가중합
         4. 질의에 문서번호(`3-1-10`)·조항(`제15조`)이 있으면 메타데이터 정확 일치 청크에 가산점
         5. 상위 `limit`건 반환
@@ -683,16 +722,37 @@ class VectorStoreManager:
         candidate_limit = max(limit * max(candidate_multiplier, 1), limit)
 
         # 1) dense 후보
-        distance = model.embedding.cosine_distance(query_vector)
-        dense_query = (model
-                       .select(*self._payload_columns(model), distance.alias("distance"))
-                       .where(model.collection_name == collection_name)
-                       .order_by(distance)
-                       .limit(candidate_limit))
-        dense_query = self._apply_filter_conditions(dense_query, model, filter_conditions)
-        dense_rows = await db_manager.execute_query(dense_query, timeout=SEARCH_QUERY_TIMEOUT)
+        payloads: dict[str, dict[str, Any]] = {}
+        dense_scores: dict[str, float] = {}
 
-        # 2) 어휘 후보
+        if milvus_store_mod.is_milvus_enabled():
+            dense_hits = await milvus_store_mod.search_document_chunks_async(
+                len(query_vector),
+                collection_name,
+                query_vector,
+                limit=candidate_limit,
+                score_threshold=None,
+                filter_conditions=filter_conditions,
+            )
+            for hit in dense_hits:
+                point_id = str(hit["id"])
+                payloads[point_id] = hit["payload"]
+                dense_scores[point_id] = float(hit["score"])
+        else:
+            distance = model.embedding.cosine_distance(query_vector)
+            dense_query = (model
+                           .select(*self._payload_columns(model), distance.alias("distance"))
+                           .where(model.collection_name == collection_name)
+                           .order_by(distance)
+                           .limit(candidate_limit))
+            dense_query = self._apply_filter_conditions(dense_query, model, filter_conditions)
+            dense_rows = await db_manager.execute_query(dense_query, timeout=SEARCH_QUERY_TIMEOUT)
+            for row in dense_rows:
+                point_id = str(row.id)
+                payloads[point_id] = self._build_payload(row)
+                dense_scores[point_id] = 1 - row.distance
+
+        # 2) 어휘 후보 (항상 Postgres)
         match_expression, rank = self._lexical_expressions(model, query_text or "")
         lexical_query = (model
                          .select(*self._payload_columns(model), rank.alias("rank"))
@@ -703,15 +763,7 @@ class VectorStoreManager:
         lexical_query = self._apply_filter_conditions(lexical_query, model, filter_conditions)
         lexical_rows = await db_manager.execute_query(lexical_query, timeout=SEARCH_QUERY_TIMEOUT)
 
-        # 3) 후보 payload 수집 (같은 청크가 양쪽에 나오므로 ID로 합칩니다.)
-        payloads: dict[str, dict[str, Any]] = {}
-        dense_scores: dict[str, float] = {}
         lexical_scores: dict[str, float] = {}
-
-        for row in dense_rows:
-            point_id = str(row.id)
-            payloads[point_id] = self._build_payload(row)
-            dense_scores[point_id] = 1 - row.distance
 
         for row in lexical_rows:
             point_id = str(row.id)
@@ -755,7 +807,8 @@ class VectorStoreManager:
         logger.debug(
             "hybrid 검색을 수행했습니다. "
             f"(collection={collection_name}, dense={len(dense_scores)}, "
-            f"lexical={len(lexical_scores)}, returned={len(results)})"
+            f"lexical={len(lexical_scores)}, returned={len(results)}, "
+            f"milvus={milvus_store_mod.is_milvus_enabled()})"
         )
         return results
 
@@ -773,6 +826,9 @@ class VectorStoreManager:
                      .where(model.collection_name == collection_name)
                      .where(model.document_id == document_id))
             await db_manager.execute_query(query, timeout=BULK_QUERY_TIMEOUT)
+
+        if milvus_store_mod.is_milvus_enabled():
+            await milvus_store_mod.delete_document_by_id_async(collection_name, document_id)
 
         logger.debug(f"청크가 삭제되었습니다. (collection={collection_name}, document_id={document_id})")
 

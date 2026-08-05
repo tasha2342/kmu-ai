@@ -36,6 +36,18 @@ s3:
   secret_key: minioadmin # Secret Key (MINIO_ROOT_PASSWORD, 8자 이상)
   secure: false # HTTPS 사용 여부
   bucket_name: kmu-ai # 버킷 이름
+# Milvus 설정 (docker-compose의 milvus 서비스. FAQ/RAG dense 벡터 — pgvector 대체)
+# enabled=false(기본): dense 읽기/쓰기는 기존 pgvector만. PG→Milvus 마이그레이션 후 true로 컷오버.
+# true일 때: dense=Milvus, 규정 hybrid 어휘·원문은 Postgres, 쓰기는 dual-write(Milvus+PG).
+# Attu: http://localhost:8004
+milvus:
+  enabled: false # True로 켤 때만 dense 경로가 Milvus로 전환된다
+  host: kmu-ai-milvus # jdone-network 내부 컨테이너명
+  port: 19530 # gRPC 포트
+  # user / password: 기본 standalone는 인증 없음. 켜면 여기에 넣는다.
+  user: null
+  password: null
+  db_name: default # Milvus database 이름
 # (Deprecated) 외부 Doc Parser — 로컬 파싱(app.utils.local_doc_parse)으로 대체되어 무시됩니다.
 # 기존 config.yaml 호환을 위해 키만 남겨 둡니다.
 doc_parser:

@@ -20,6 +20,7 @@ from app.models.enum import (
 from app.utils.database import DatabaseManager
 from app.utils.logger import get_logger
 from app.utils.litellm import create_embedding
+from app.utils import milvus_store as milvus_store_mod
 import app.models.database as db_models
 import app.models.db_item as db_items
 import app.utils.common as util
@@ -31,8 +32,9 @@ logger = get_logger("faq", log_dir="logs")
 FAQ_COLLECTION_NAME = "kmu_faq_knowledge"
 """FAQ 지식베이스 논리 컬렉션명 (기능정의서 3. ERD의 `qdrant.collection` 명칭을 유지)
 
-벡터는 Qdrant가 아니라 PostgreSQL `faq_embeddings` 테이블(pgvector)에 저장합니다.
-이 이름은 어떤 임베딩 모델·차원으로 색인 중인지를 기록하는 `collections` 레지스트리 행의 키로만 씁니다.
+원문·메타는 PostgreSQL `faq_embeddings`에 둔다. dense ANN은 `config.milvus.enabled`가
+False면 pgvector, True면 Milvus(`faq_embeddings` 컬렉션) + PG dual-write다.
+이 이름은 임베딩 모델·차원을 기록하는 `collections` 레지스트리 행의 키로도 쓴다.
 """
 
 class FaqKnowledgeBaseNotReady(Exception):
@@ -326,7 +328,7 @@ async def _upsert_embedding_row(
     faq_id: UUID,
     fields: dict,
 ):
-    """`faq_embeddings` 행을 생성하거나 갱신합니다."""
+    """`faq_embeddings` 행을 생성하거나 갱신합니다. milvus.enabled면 Milvus에도 dual-write."""
 
     if index:
         query = (db_models.FaqEmbedding.update(**fields)
@@ -334,6 +336,18 @@ async def _upsert_embedding_row(
     else:
         query = db_models.FaqEmbedding.insert(faq_id=faq_id, **fields)
     await db_manager.execute_query(query)
+
+    if milvus_store_mod.is_milvus_enabled():
+        embedding = fields.get("embedding")
+        entity = milvus_store_mod.faq_fields_to_entity(
+            faq_id=faq_id, embedding=embedding, fields=fields,
+        )
+        if entity is None:
+            # 색인 실패 등으로 벡터가 없으면 Milvus에서 제거해 PG와 맞춘다
+            await milvus_store_mod.delete_faq_async(faq_id)
+        else:
+            await milvus_store_mod.upsert_faq_async(db_models.FAQ_EMBEDDING_DIM, entity)
+
 
 async def delete_faq_vectors(db_manager: DatabaseManager, faq_id: UUID):
     """FAQ의 임베딩 레코드를 삭제합니다.
@@ -346,6 +360,10 @@ async def delete_faq_vectors(db_manager: DatabaseManager, faq_id: UUID):
     query = (db_models.FaqEmbedding.delete()
              .where(db_models.FaqEmbedding.faq_id == faq_id))
     await db_manager.execute_query(query)
+
+    if milvus_store_mod.is_milvus_enabled():
+        await milvus_store_mod.delete_faq_async(faq_id)
+
 
 async def mark_faq_stale(db_manager: DatabaseManager, faq_id: UUID):
     """FAQ 원문이 수정되었음을 임베딩 레코드에 표시합니다.
@@ -361,6 +379,10 @@ async def mark_faq_stale(db_manager: DatabaseManager, faq_id: UUID):
     ).where(db_models.FaqEmbedding.faq_id == faq_id))
     await db_manager.execute_query(query)
 
+    # stale은 검색 필터에서 빠지므로 Milvus에서도 제거 (재색인 시 다시 올라온다)
+    if milvus_store_mod.is_milvus_enabled():
+        await milvus_store_mod.delete_faq_async(faq_id)
+
 
 async def search_faq(
     db_manager: DatabaseManager,
@@ -375,8 +397,8 @@ async def search_faq(
 ) -> tuple[list[FaqSearchResult], int]:
     """FAQ 지식베이스에서 유사 질문을 검색합니다. (기능정의서 2. 챗봇 데이터 확인 - FAQ 유사도 검색)
 
-    pgvector의 코사인 거리(`<=>`) 기준 HNSW 인덱스를 사용합니다.
-    거리는 0(동일)~2(정반대) 범위라 유사도는 `1 - distance`로 환산합니다.
+    `milvus.enabled=False`면 pgvector 코사인 거리(`<=>`) HNSW,
+    True면 Milvus COSINE ANN. 유사도는 cosine similarity로 환산합니다.
 
     Args:
         db_manager (DatabaseManager): 데이터베이스 매니저
@@ -409,39 +431,61 @@ async def search_faq(
 
     vectors = await embed_texts(model, user_info, [query_text])
 
-    distance = db_models.FaqEmbedding.embedding.cosine_distance(vectors[0])
-    query = (db_models.FaqEmbedding
-             .select(db_models.FaqEmbedding, distance.alias("distance"))
-             # 임시 저장·보관 FAQ와 색인 실패분이 검색되지 않도록 항상 고정한다
-             .where(db_models.FaqEmbedding.status == FaqStatus.PUBLISHED.value)
-             .where(db_models.FaqEmbedding.vector_status == VectorStatus.INDEXED.value)
-             .where(db_models.FaqEmbedding.embedding.is_null(False))
-             .order_by(distance)
-             .limit(top_k))
-    if language:
-        query = query.where(db_models.FaqEmbedding.language == language.value)
-    if category_code:
-        query = query.where(db_models.FaqEmbedding.category_code == category_code)
-    if visibility:
-        query = query.where(db_models.FaqEmbedding.visibility == visibility.value)
-
-    # 벡터 검색은 임베딩 CPU 부하와 겹치면 기본 5초를 넘기기 쉽다.
-    rows = await db_manager.execute_query(query, timeout=30.0)
-
     results: list[FaqSearchResult] = []
-    for row in rows:
-        score = 1 - row.distance
-        if score_threshold is not None and score < score_threshold:
-            continue
-        results.append(FaqSearchResult(
-            faq_id=row.faq_id,
-            question=row.question,
-            category_code=row.category_code,
-            department_code=row.department_code,
-            tags=row.tags or [],
-            source_url=row.source_url,
-            score=score,
-        ))
+
+    if milvus_store_mod.is_milvus_enabled():
+        hits = await milvus_store_mod.search_faq_async(
+            db_models.FAQ_EMBEDDING_DIM,
+            vectors[0],
+            limit=top_k,
+            score_threshold=score_threshold,
+            language=language.value if language else None,
+            category_code=category_code,
+            visibility=visibility.value if visibility else None,
+        )
+        for hit in hits:
+            results.append(FaqSearchResult(
+                faq_id=UUID(str(hit["faq_id"])),
+                question=hit["question"],
+                category_code=hit.get("category_code"),
+                department_code=hit.get("department_code"),
+                tags=hit.get("tags") or [],
+                source_url=hit.get("source_url"),
+                score=hit["score"],
+            ))
+    else:
+        distance = db_models.FaqEmbedding.embedding.cosine_distance(vectors[0])
+        query = (db_models.FaqEmbedding
+                 .select(db_models.FaqEmbedding, distance.alias("distance"))
+                 # 임시 저장·보관 FAQ와 색인 실패분이 검색되지 않도록 항상 고정한다
+                 .where(db_models.FaqEmbedding.status == FaqStatus.PUBLISHED.value)
+                 .where(db_models.FaqEmbedding.vector_status == VectorStatus.INDEXED.value)
+                 .where(db_models.FaqEmbedding.embedding.is_null(False))
+                 .order_by(distance)
+                 .limit(top_k))
+        if language:
+            query = query.where(db_models.FaqEmbedding.language == language.value)
+        if category_code:
+            query = query.where(db_models.FaqEmbedding.category_code == category_code)
+        if visibility:
+            query = query.where(db_models.FaqEmbedding.visibility == visibility.value)
+
+        # 벡터 검색은 임베딩 CPU 부하와 겹치면 기본 5초를 넘기기 쉽다.
+        rows = await db_manager.execute_query(query, timeout=30.0)
+
+        for row in rows:
+            score = 1 - row.distance
+            if score_threshold is not None and score < score_threshold:
+                continue
+            results.append(FaqSearchResult(
+                faq_id=row.faq_id,
+                question=row.question,
+                category_code=row.category_code,
+                department_code=row.department_code,
+                tags=row.tags or [],
+                source_url=row.source_url,
+                score=score,
+            ))
 
     # 답변 본문은 색인 테이블에 두지 않는다(장문·잦은 수정). 필요할 때만 원본에서 최신본을 읽는다.
     if with_answer and results:

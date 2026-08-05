@@ -34,6 +34,8 @@ dependencies = [
     "litellm>=1.80.11",
     "boto3>=1.42.24",
     "pgvector>=0.3.6,<0.4",
+    # FAQ/문서 dense ANN (milvus.enabled 컷오버 시). 어휘(FTS)는 Postgres 유지.
+    "pymilvus>=2.5.0,<3",
     # 학칙·규정 HWP 본문/표 추출 (hwp5txt, hwp5html)
     "pyhwp>=0.1b15",
     "neo4j>=5.28.0",

@@ -176,6 +176,28 @@ class MemgraphConfig(BaseModel):
     """SSL/TLS 사용 여부"""
 
 
+class MilvusConfig(BaseModel):
+    """Milvus 벡터 저장소 설정 (pgvector dense ANN 대체)
+
+    `enabled=False`(기본)이면 FAQ/문서 dense 검색·쓰기는 기존 pgvector만 쓴다.
+    마이그레이션 후 `enabled=True`로 컷오버한다. 켜져 있을 때는 dense는 Milvus,
+    규정 hybrid의 어휘(FTS)·원문 hydrate는 Postgres를 유지하고, 쓰기는 dual-write한다.
+    """
+
+    enabled: bool = False
+    """True면 dense 읽기=Milvus, 쓰기=Milvus+PG dual-write"""
+    host: str = "kmu-ai-milvus"
+    """서버 호스트 (docker-compose 컨테이너명)"""
+    port: int = 19530
+    """gRPC 포트"""
+    user: Optional[str] = None
+    """인증 사용자 (standalone 기본은 없음)"""
+    password: Optional[str] = None
+    """인증 비밀번호"""
+    db_name: str = "default"
+    """Milvus database 이름"""
+
+
 class ChatbotMessagesConfig(BaseModel):
     """챗봇 안내 문구 설정 클래스
 
@@ -326,6 +348,8 @@ class Config(BaseModel):
     """(Deprecated) 과거 Doc Parser 설정. 로컬 파싱으로 대체되어 무시됩니다."""
     memgraph: MemgraphConfig
     """Memgraph 관련 설정 (GraphRAG)"""
+    milvus: MilvusConfig = MilvusConfig()
+    """Milvus 관련 설정 (dense 벡터. enabled로 컷오버)"""
     chatbot: ChatbotConfig
     """챗봇 관련 설정"""
     external_links: list[ExternalLinkConfig] = []

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from typing import Any
 
-from app.models.config import EnvConfig, Config
+from app.models.config import EnvConfig, Config, MilvusConfig
 
 
 # 환경 변수
@@ -40,15 +40,17 @@ if not os.path.isfile(CONFIG_FILE):
 
 # yaml 설정 파일 읽기
 with open(CONFIG_FILE, "r", encoding="utf-8") as file:
-    config = yaml.load(file, Loader=yaml.FullLoader)
+    raw_config = yaml.load(file, Loader=yaml.FullLoader)
 
 config = Config(
-    database=config["database"],
-    redis=config["redis"],
-    auth=config["auth"],
-    s3=config["s3"],
-    doc_parser=config["doc_parser"],
-    memgraph=config["memgraph"],
-    chatbot=config["chatbot"],
-    external_links=config.get("external_links", []),
+    database=raw_config["database"],
+    redis=raw_config["redis"],
+    auth=raw_config["auth"],
+    s3=raw_config["s3"],
+    doc_parser=raw_config.get("doc_parser") or {},
+    memgraph=raw_config["memgraph"],
+    # milvus 섹션이 없는 기존 config.yaml도 기동되게 기본값(enabled=False)을 쓴다.
+    milvus=raw_config.get("milvus") or MilvusConfig(),
+    chatbot=raw_config["chatbot"],
+    external_links=raw_config.get("external_links", []),
 )

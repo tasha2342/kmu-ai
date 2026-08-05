@@ -1,0 +1,14 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "kmu-ai",
+      "Group": "Servers",
+      "Host": "kmu-ai-postgres",
+      "Port": 5432,
+      "MaintenanceDB": "kmu_ai",
+      "Username": "jdone",
+      "SSLMode": "prefer",
+      "Comment": "kmu-ai 앱 DB. 비밀번호는 .env의 KMU_AI_DB_PASSWORD."
+    }
+  }
+}
