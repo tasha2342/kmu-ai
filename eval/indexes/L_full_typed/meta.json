@@ -1,0 +1,18 @@
+{
+  "name": "L_full_typed",
+  "documents": 181,
+  "chunks": 4916,
+  "typed_dates": true,
+  "table_captions": false,
+  "with_tables": false,
+  "embedding_model": null,
+  "section_type_counts": {
+    "article": 3218,
+    "addendum": 648,
+    "chapter": 519,
+    "body": 184,
+    "meta": 181,
+    "attachment": 124,
+    "section": 42
+  }
+}

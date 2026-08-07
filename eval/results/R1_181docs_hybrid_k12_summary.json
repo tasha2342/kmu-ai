@@ -1,0 +1,40 @@
+{
+  "n": 48,
+  "answer_accuracy": 0.5417,
+  "recall_at_k": 0.8542,
+  "mrr": 0.7453,
+  "avg_latency_sec": 0.1645,
+  "failure_counts": {
+    "generation_failure": 13,
+    "retrieval_failure": 8,
+    "chunking_failure": 1
+  },
+  "date_accuracy": 0.6667,
+  "date_recall_at_k": 0.7917,
+  "date_n": 24,
+  "table_accuracy": 0.4167,
+  "table_recall_at_k": 0.9167,
+  "table_n": 24,
+  "subtype_accuracy": {
+    "article_revision": 0.2,
+    "cell_value": 0.4118,
+    "empty_cell_probe": 0.0,
+    "filename_effective": 1.0,
+    "historical_byeolchik": 0.0,
+    "latest_byeolchik": 0.8571,
+    "list_structure": 0.6667,
+    "paraphrase_filename": 1.0,
+    "table_meta": 0.3333
+  },
+  "experiment": "R1_181docs_hybrid_k12",
+  "index": "E181_base",
+  "backend": "hybrid",
+  "top_k": 12,
+  "date_lane": false,
+  "table_lane": false,
+  "title_routing": false,
+  "vision": "off",
+  "generate": false,
+  "documents": 181,
+  "chunks": 5359
+}

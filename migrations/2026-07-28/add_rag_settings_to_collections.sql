@@ -1,0 +1,14 @@
+-- 2026-07-28 Migration
+-- collections: RAG 검색/청킹 파라미터
+
+ALTER TABLE collections
+    ADD COLUMN IF NOT EXISTS chunk_size INTEGER NOT NULL DEFAULT 1000;
+
+ALTER TABLE collections
+    ADD COLUMN IF NOT EXISTS chunk_overlap INTEGER NOT NULL DEFAULT 100;
+
+ALTER TABLE collections
+    ADD COLUMN IF NOT EXISTS top_k INTEGER NOT NULL DEFAULT 5;
+
+ALTER TABLE collections
+    ADD COLUMN IF NOT EXISTS similarity_threshold DOUBLE PRECISION NOT NULL DEFAULT 0.35;

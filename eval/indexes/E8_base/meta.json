@@ -1,0 +1,19 @@
+{
+  "name": "E8_base",
+  "documents": 8,
+  "chunks": 654,
+  "typed_dates": false,
+  "table_captions": false,
+  "with_tables": true,
+  "embedding_model": "nlpai-lab/KURE-v1",
+  "section_type_counts": {
+    "addendum": 275,
+    "article": 264,
+    "table": 31,
+    "attachment": 26,
+    "section": 20,
+    "chapter": 19,
+    "body": 11,
+    "meta": 8
+  }
+}
