@@ -330,12 +330,14 @@ async def _upsert_embedding_row(
 ):
     """`faq_embeddings` 행을 생성하거나 갱신합니다. milvus.enabled면 Milvus에도 dual-write."""
 
+    # 임베딩 CPU가 이벤트 루프를 오래 잡아먹으면 기본 5초로는 INSERT가 타임아웃난다.
+    upsert_timeout = 60.0
     if index:
         query = (db_models.FaqEmbedding.update(**fields)
                  .where(db_models.FaqEmbedding.id == index.id))
     else:
         query = db_models.FaqEmbedding.insert(faq_id=faq_id, **fields)
-    await db_manager.execute_query(query)
+    await db_manager.execute_query(query, timeout=upsert_timeout)
 
     if milvus_store_mod.is_milvus_enabled():
         embedding = fields.get("embedding")

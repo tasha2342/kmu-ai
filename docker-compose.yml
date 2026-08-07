@@ -231,14 +231,17 @@ services:
     networks:
       - jdone-network
 
-  # ─── Milvus (pgvector → Milvus 마이그레이션용 벡터 DB) ─────────────────────
-  # 공식 standalone 구성: etcd(메타) + MinIO(오브젝트) + milvus + Attu(관리 UI).
-  # 앱 첨부용 `minio`(kmu-ai-minio)와는 별개다. Milvus가 벡터/인덱스 blob을 여기에 둔다.
+  # ─── Milvus (선택. profile=milvus. 기본 `compose up`에는 안 뜸) ───────────
+  # 공식 standalone: etcd + MinIO + milvus + Attu.
+  # 앱 첨부용 `minio`(kmu-ai-minio)와는 별개다.
+  # 개발 서버(≈4GB)에서는 OOM이 나므로 기본 비활성. dense는 config milvus.enabled=false → pgvector.
+  # 켤 때: docker compose --profile milvus up -d  그리고 config.yaml milvus.enabled: true
   # jdone-network는 프로젝트 공유망이라 ETCD/MINIO/MILVUS 주소는 반드시 컨테이너명을 쓴다.
 
   milvus-etcd:
+    profiles: ["milvus"]
     container_name: kmu-ai-milvus-etcd
-    image: quay.io/coreos/etcd:v3.5.25
+    image: quay.io/coreos/etcd:v3.5.18
     restart: unless-stopped
     environment:
       ETCD_AUTO_COMPACTION_MODE: revision
@@ -265,6 +268,7 @@ services:
   # Milvus 전용 오브젝트 스토리지. 앱 S3(`minio` / kmu-ai-minio)와 분리한다.
   # 호스트 포트는 열지 않는다. (앱 MinIO가 이미 9005/9006을 쓰고, Milvus만 내부 접속하면 됨)
   milvus-minio:
+    profiles: ["milvus"]
     container_name: kmu-ai-milvus-minio
     image: minio/minio:RELEASE.2024-05-28T17-19-04Z
     restart: unless-stopped
@@ -283,8 +287,10 @@ services:
       - jdone-network
 
   milvus:
+    profiles: ["milvus"]
     container_name: kmu-ai-milvus
-    image: milvusdb/milvus:v3.0.0
+    # v3는 이미지·메모리가 커서 이 호스트에서 restart loop(OOM). 2.5 계열로 고정.
+    image: milvusdb/milvus:v2.5.14
     restart: unless-stopped
     command: ["milvus", "run", "standalone"]
     security_opt:
@@ -320,6 +326,7 @@ services:
   # Milvus 관리자 GUI (Attu). pgAdmin과 같이 앱 동작에는 관여하지 않는다.
   # 브라우저: http://localhost:8004  → 연결 주소는 컨테이너망 기준 kmu-ai-milvus:19530
   attu:
+    profiles: ["milvus"]
     container_name: kmu-ai-attu
     image: zilliz/attu:v2.5
     restart: unless-stopped
