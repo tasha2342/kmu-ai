@@ -213,6 +213,7 @@ services:
 
   frontend: # 챗봇 대화 + 관리자 화면 (React/Vite 빌드 -> nginx 정적 서빙)
     container_name: kmu-ai-frontend
+    image: kmu-ai-frontend:latest # 폐쇄망: ys에서 빌드해 load한 이미지 사용(빌드 회피)
     build:
       context: ./frontend
       dockerfile: Dockerfile
