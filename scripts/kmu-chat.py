@@ -34,6 +34,10 @@ ALLOWED_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif",
                ".pdf", ".docx", ".txt", ".hwp", ".hwpx", ".md")
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
+# SFTP로 파일을 올려 두고 /ls 로 골라 첨부하는 기본 디렉터리입니다.
+# 한글 파일명은 터미널에서 타이핑하기 번거로워 번호로 고르게 했습니다.
+UPLOAD_DIR = os.environ.get("KMU_AI_UPLOAD_DIR", os.path.expanduser("~/repos/test_docs"))
+
 
 def force_utf8_io():
     """표준 입출력을 UTF-8로 고정합니다.
@@ -77,7 +81,24 @@ def out(text=""):
     sys.stdout.flush()
 
 
+try:
+    # 방향키 편집과 입력 이력. 없으면(윈도우 등) 그냥 없는 대로 동작합니다.
+    import readline  # noqa: F401
+except ImportError:
+    pass
+
+
 def ask_line(prompt):
+    # 터미널이면 input()을 씁니다. readline이 걸려 있어 방향키·이력이 동작합니다.
+    # 파이프로 넣는 자동 테스트에서는 readline이 의미가 없어 그냥 readline()으로 갑니다.
+    if sys.stdin.isatty():
+        try:
+            return input(prompt)
+        except UnicodeDecodeError:
+            out("\n  " + RED + "입력을 UTF-8로 읽지 못했습니다." + RESET)
+            out("  " + DIM + "PuTTY의 Window > Translation > Remote character set을 UTF-8로 "
+                             "두거나, 서버에서 export LANG=C.UTF-8 후 다시 실행하세요." + RESET)
+            return ""
     sys.stdout.write(prompt)
     sys.stdout.flush()
     try:
@@ -273,10 +294,69 @@ class Chat(object):
         self.last_sources = []
         # 업로드해 두고 다음 질문에 함께 보낼 첨부입니다. 전송에 성공하면 비웁니다.
         self.pending = []
+        # /ls 로 훑은 디렉터리의 파일 목록. /file <번호> 가 이걸 참조합니다.
+        self.listing = []
+
+    def list_dir(self, path=None):
+        """디렉터리의 첨부 가능한 파일을 번호와 함께 보여 줍니다.
+
+        SFTP로 올린 파일을 긴 경로(특히 한글 파일명) 타이핑 없이 고르기 위한 것입니다.
+        """
+        target = os.path.expanduser((path or UPLOAD_DIR).strip().strip('"').strip("'"))
+        if not os.path.isdir(target):
+            out("  " + RED + "디렉터리가 없습니다: %s" % target + RESET)
+            if not path:
+                out("  " + DIM + "SFTP로 이 경로에 파일을 올린 뒤 /ls 하세요. "
+                                 "(mkdir -p %s)" % target + RESET)
+            return
+        try:
+            names = sorted(os.listdir(target))
+        except OSError as e:
+            out("  " + RED + "읽을 수 없습니다: %s" % e + RESET)
+            return
+
+        rows = []
+        skipped = 0
+        for n in names:
+            full = os.path.join(target, n)
+            if not os.path.isfile(full):
+                continue
+            if os.path.splitext(n)[1].lower() not in ALLOWED_EXT:
+                skipped += 1
+                continue
+            rows.append((full, n, os.path.getsize(full)))
+
+        out()
+        out("  %s%s%s" % (DIM, target, RESET))
+        if not rows:
+            out("  " + DIM + "(첨부 가능한 파일 없음%s)"
+                % (", 미지원 형식 %d개 제외" % skipped if skipped else "") + RESET)
+            out()
+            return
+        for i, (_, n, size) in enumerate(rows, 1):
+            out("  %s%2d.%s %-40s %s%s%s" % (BOLD, i, RESET, n, DIM, human_size(size), RESET))
+        if skipped:
+            out("  " + DIM + "(미지원 형식 %d개는 숨겼습니다)" % skipped + RESET)
+        out("  " + DIM + "/file <번호> 로 첨부합니다. 예: /file 1" + RESET)
+        out()
+        self.listing = [r[0] for r in rows]
 
     def upload(self, path):
-        """파일을 첨부로 업로드합니다. 성공하면 서버가 준 메타를 pending에 넣습니다."""
-        path = os.path.expanduser(path.strip().strip('"').strip("'"))
+        """파일을 첨부로 업로드합니다. 성공하면 서버가 준 메타를 pending에 넣습니다.
+
+        경로 대신 /ls 목록의 번호를 줘도 됩니다.
+        """
+        path = path.strip().strip('"').strip("'")
+        if path.isdigit():
+            idx = int(path)
+            if not self.listing:
+                out("  " + YELLOW + "먼저 /ls 로 목록을 보세요." + RESET)
+                return
+            if not (1 <= idx <= len(self.listing)):
+                out("  " + YELLOW + "1~%d 사이 번호를 주세요." % len(self.listing) + RESET)
+                return
+            path = self.listing[idx - 1]
+        path = os.path.expanduser(path)
         if not os.path.isfile(path):
             out("  " + RED + "파일이 없습니다: %s" % path + RESET)
             return
@@ -453,7 +533,8 @@ HELP_LINES = [
     "    /help              이 도움말",
     "    /new               새 대화 세션 (이전 맥락을 버립니다)",
     "    /sources           직전 응답의 근거 전체",
-    "    /file <경로>       파일·이미지 첨부 (다음 질문에 함께 전송)",
+    "    /ls [경로]         첨부할 파일 목록 (기본 ~/repos/test_docs)",
+    "    /file <번호|경로>  파일·이미지 첨부 (다음 질문에 함께 전송)",
     "    /files             대기 중인 첨부 목록",
     "    /drop              대기 중인 첨부 비우기",
     "    /status            모델·세션 상태",
@@ -462,6 +543,9 @@ HELP_LINES = [
     "  첨부는 png jpg jpeg webp gif pdf docx txt hwp hwpx md, 파일당 10MB까지.",
     "  이미지는 멀티모달로, 문서는 로컬 파싱 텍스트로 모델에 전달됩니다.",
     "  첨부만 보내려면 질문 없이 그냥 엔터를 치면 됩니다.",
+    "",
+    "  SFTP로 ~/repos/test_docs 에 파일을 올린 뒤 /ls → /file 1 순서로 쓰면",
+    "  긴 한글 파일명을 타이핑하지 않아도 됩니다.",
     "",
     "  그 밖의 입력은 모두 챗봇 질문으로 전송됩니다.",
 ]
@@ -554,13 +638,19 @@ def main():
                 out()
             continue
 
-        # /file 은 인자가 붙으므로 소문자 변환 전에 먼저 처리합니다. (경로 대소문자 보존)
-        if line.split(" ", 1)[0].lower() in ("/file", "/img", "/image", "/attach"):
+        # 인자가 붙는 명령은 소문자 변환 전에 처리합니다. (경로 대소문자 보존)
+        head = line.split(" ", 1)[0].lower()
+        if head in ("/file", "/img", "/image", "/attach"):
             parts = line.split(" ", 1)
             if len(parts) < 2 or not parts[1].strip():
-                out("  " + YELLOW + "경로를 함께 적어주세요. 예: /file ~/test.png" + RESET)
+                out("  " + YELLOW + "경로나 /ls 목록 번호를 적어주세요. "
+                                    "예: /file 1  또는  /file ~/uploads/a.hwp" + RESET)
             else:
                 chat.upload(parts[1])
+            continue
+        if head in ("/ls", "/dir"):
+            parts = line.split(" ", 1)
+            chat.list_dir(parts[1] if len(parts) > 1 else None)
             continue
 
         cmd = line.lower()
