@@ -34,6 +34,32 @@ ALLOWED_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif",
                ".pdf", ".docx", ".txt", ".hwp", ".hwpx", ".md")
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
+
+def force_utf8_io():
+    """표준 입출력을 UTF-8로 고정합니다.
+
+    서버 로케일이 `C`/`POSIX`면 파이썬이 stdin을 ASCII로 디코딩해서, 한글 질문을
+    입력하는 순간 UnicodeDecodeError로 죽습니다. (로그인은 ASCII라 통과하고
+    첫 한글 입력에서 터지므로 원인을 오해하기 쉽습니다)
+
+    errors="replace"를 두는 이유는, PuTTY의 '원격 문자셋'이 UTF-8이 아닐 때
+    들어오는 바이트가 애초에 UTF-8이 아니어서입니다. 그 경우 죽지는 않지만 글자가
+    깨지므로, 아래에서 한 번 안내합니다.
+
+    Returns:
+        Optional[str]: 원래 stdin 인코딩. UTF-8이 아니었으면 그 이름, 맞았으면 None
+    """
+    before = getattr(sys.stdin, "encoding", None)
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            # 3.6 이하이거나 파이프로 감싸인 스트림. 아래 안내로 대신합니다.
+            pass
+    if before and before.lower().replace("-", "") not in ("utf8",):
+        return before
+    return None
+
 # ── 색상 ──────────────────────────────────────────────────────────────────
 # 색을 못 내는 터미널이나 파이프로 넘길 때는 전부 빈 문자열로 만들어 깨지지 않게 합니다.
 if sys.stdout.isatty() and os.environ.get("TERM") not in (None, "", "dumb"):
@@ -54,7 +80,14 @@ def out(text=""):
 def ask_line(prompt):
     sys.stdout.write(prompt)
     sys.stdout.flush()
-    line = sys.stdin.readline()
+    try:
+        line = sys.stdin.readline()
+    except UnicodeDecodeError:
+        # force_utf8_io()가 스트림을 못 바꾼 환경. 입력만 버리고 계속 진행합니다.
+        out("\n  " + RED + "입력을 UTF-8로 읽지 못했습니다." + RESET)
+        out("  " + DIM + "PuTTY의 Window > Translation > Remote character set을 UTF-8로 "
+                         "두거나, 서버에서 export LANG=C.UTF-8 후 다시 실행하세요." + RESET)
+        return ""
     if not line:
         raise EOFError
     return line.rstrip("\n")
@@ -478,10 +511,15 @@ def show_sources(chat):
 
 
 def main():
+    was = force_utf8_io()
     api, kc = resolve_endpoints()
     auth = Auth(kc)
 
     out()
+    if was:
+        out(YELLOW + "  터미널 인코딩이 %s로 잡혀 있어 UTF-8로 바꿨습니다." % was + RESET)
+        out(DIM + "  한글이 깨지면 PuTTY의 Window > Translation > Remote character set을"
+                  " UTF-8로 두거나, 서버에서 export LANG=C.UTF-8 하세요." + RESET)
     out(BOLD + "  kmu-ai 로그인" + RESET + DIM + "  (Keycloak realm: %s)" % REALM + RESET)
     logged_in = False
     for _ in range(3):
