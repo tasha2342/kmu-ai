@@ -158,3 +158,9 @@ config.yaml
 
 # Claude Code 로컬 설정 (이 머신 전용, 커밋하지 않는다)
 .claude/settings.local.json
+
+# 평가 하네스가 만드는 재생성 가능한 산출물. 보고서(docs/*_eval.md)만 커밋하고
+# 원시 로그는 남기지 않는다. judge_cache는 LLM 판정 캐시라 532파일 2.2MB까지 불어난다.
+eval/judge_cache/
+eval/judge_batches/
+eval/results/
