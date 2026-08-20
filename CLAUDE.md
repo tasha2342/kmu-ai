@@ -85,6 +85,39 @@ frontend/src/
   HWP는 rhwp CLI → PDF → pypdfium2, 챗봇은 텍스트+페이지/표 이미지를 멀티모달로 넣습니다.
   학칙 인제스트만 기존 pyhwp(`hwp_extractor`)를 유지합니다.
 
+## 개발·운영 버전 추적 (`ops/versions/`)
+
+서버가 셋이고 역할이 다르다. **개발 `ys`** — 인터넷·Docker 있음, 개발은 여기서만 한다.
+**중계 PC** — 양쪽에 닿는 유일한 지점, 배포는 여기서만 나간다.
+**운영 `kmu-ai-gpu-01`** — HIWARE 터널로만 닿는 완전 폐쇄망.
+
+코드가 같아도 동작이 다른 일이 반복됐다. 이미지가 전부 `:latest`라 어느 빌드인지 알 수 없었고,
+`models` 테이블이 비어 있었고, 운영 `docker-compose.yml`은 두 브랜치 어디에도 없는 상태였다.
+그래서 상태를 파일로 남기고 세션 시작 때 자동 비교한다.
+
+```
+ops/versions/dev.json    ys 의 Claude 만 쓴다
+ops/versions/prod.json   중계 PC 의 Claude 만 쓴다 (expected_diff 도 여기 있다)
+```
+
+**자기 환경 파일만 쓴다.** 서로 다른 파일만 건드리므로 git 충돌이 구조적으로 나지 않는다.
+이력은 `git log -p ops/versions/prod.json` 이 담당하니 파일 안에 히스토리를 쌓지 않는다.
+
+- 세션 시작 훅(`.claude/settings.json`)은 **파일만 읽는다.** SSH를 붙이면 매 세션 인증이
+  발생해 HIWARE 차단을 부른다. 실제 수집은 `/version-check` 로만 한다.
+- **비교 기준은 태그가 아니라 이미지 ID다.** `docker save`/`load` 는 이미지 ID를 보존하므로,
+  레지스트리 없이 폐쇄망을 건너 같은 빌드인지 확인할 수 있는 유일한 식별자다.
+  컨테이너가 *실제로 돌리는* ID를 기록하므로 "빌드는 했는데 재시작을 안 한" 상태도 잡힌다.
+- **운영과 개발이 원래 다른 것**(운영만 로컬 GPU 모델, 운영만 규정 181건 등)은
+  `prod.json` 의 `expected_diff` 에 선언한다. `mode: "pin"` 은 값까지 고정해서, 실제가
+  달라지면 `STALE-RULE` 로 다시 시끄러워진다. 규칙이 새 드리프트를 가리지 않게 하는 장치다.
+- **리포는 공개 저장소다.** 상태 파일에 호스트·비밀번호가 들어가면 안 된다. 설정값은
+  화이트리스트(`REDACTION`)에 있는 키만, `plain`/`shape`/`presence` 세 등급으로만 남긴다.
+  호스트는 해시가 아니라 `shape`(`container:kmu-ai-redis` 등)로 남기는데, IPv4 해시는
+  2^32 전수로 수 초 만에 역산되기 때문이다. `record` 가 쓰기 전에 정규식으로 검사해
+  걸리면 **거부한다.** 거부되면 우회하지 말고 `REDACTION` 을 고칠 것.
+- 접속 자격증명은 `ops/local.env`(`.git/info/exclude` 등재, 커밋 안 됨)에 둔다.
+
 ## 하지 말 것
 
 - `litellm.acompletion` 직접 호출 (사용량 집계 누락)

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 scripts/version_log.py report --brief",
+            "timeout": 15,
+            "statusMessage": "배포 버전 비교 중"
+          }
+        ]
+      }
+    ]
+  }
+}

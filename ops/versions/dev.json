@@ -1,0 +1,330 @@
+{
+  "captured_at": "2026-08-20T01:43:18+00:00",
+  "code": {
+    "branch": "main",
+    "commit": "ec4adc37d5e45a5f442567a6043655aac1d74616",
+    "commit_short": "ec4adc3",
+    "dirty": false,
+    "dirty_files": {}
+  },
+  "config": {
+    "files": {
+      "Dockerfile": "sha256:b3a14bd7c62b0f22098b0f4f24eb5559a4fcab224dfe25504860c5ee967a8258",
+      "configs/.env": "sha256:a01ac96ed6885b977ced8a567b70b63b8ba4e376f443b7b739e9385114501750",
+      "configs/config.yaml": "sha256:008043efe9ced7e860a5162e92883c83eea5f431705c3a44b778ec5cca6e6155",
+      "docker-compose.yml": "sha256:36047231c649fd710b1fe714672affe4660040cccb5eee7a0623d24fdd349225"
+    },
+    "keys": {
+      "auth.servers[0].admin_password": {
+        "c": "presence",
+        "v": "set"
+      },
+      "auth.servers[0].client_id": {
+        "c": "plain",
+        "v": "kmu-ai-api"
+      },
+      "auth.servers[0].client_secret_key": {
+        "c": "presence",
+        "v": "set"
+      },
+      "auth.servers[0].realm_name": {
+        "c": "plain",
+        "v": "kmu-ai"
+      },
+      "auth.servers[0].server_url": {
+        "c": "shape",
+        "v": "http://container:kmu-ai-keycloak"
+      },
+      "chatbot.embedding_dim": {
+        "c": "plain",
+        "v": 1024
+      },
+      "chatbot.embedding_model": {
+        "c": "plain",
+        "v": "kmu-embedding"
+      },
+      "chatbot.evidence_max_chars": {
+        "c": "plain",
+        "v": 20000
+      },
+      "chatbot.history_limit": {
+        "c": "plain",
+        "v": 10
+      },
+      "chatbot.history_max_chars": {
+        "c": "plain",
+        "v": 6000
+      },
+      "chatbot.ingestion_job_timeout_minutes": {
+        "c": "plain",
+        "v": 60
+      },
+      "chatbot.query_max_chars": {
+        "c": "plain",
+        "v": 8000
+      },
+      "chatbot.score_threshold": {
+        "c": "plain",
+        "v": 0.35
+      },
+      "chatbot.source_content_max_chars": {
+        "c": "plain",
+        "v": 1500
+      },
+      "chatbot.summary_trigger_count": {
+        "c": "plain",
+        "v": 20
+      },
+      "chatbot.text_model": {
+        "c": "plain",
+        "v": "kmu-chat-gpu"
+      },
+      "chatbot.top_k": {
+        "c": "plain",
+        "v": 5
+      },
+      "database.db_type": {
+        "c": "plain",
+        "v": "postgresql"
+      },
+      "database.host": {
+        "c": "shape",
+        "v": "container:kmu-ai-postgres"
+      },
+      "database.name": {
+        "c": "plain",
+        "v": "kmu_ai"
+      },
+      "database.password": {
+        "c": "presence",
+        "v": "set"
+      },
+      "database.pool_max_connections": {
+        "c": "plain",
+        "v": 20
+      },
+      "env.APP_ENV": {
+        "c": "plain",
+        "v": "development"
+      },
+      "env.ENABLE_OPENAPI": {
+        "c": "plain",
+        "v": true
+      },
+      "env.ENABLE_SWAGGER": {
+        "c": "plain",
+        "v": true
+      },
+      "env.LOG_LEVEL": {
+        "c": "plain",
+        "v": "info"
+      },
+      "memgraph.host": {
+        "c": "shape",
+        "v": "private-ip"
+      },
+      "milvus.enabled": {
+        "c": "plain",
+        "v": false
+      },
+      "milvus.host": {
+        "c": "shape",
+        "v": "container:kmu-ai-milvus"
+      },
+      "redis.host": {
+        "c": "shape",
+        "v": "container:kmu-ai-redis"
+      },
+      "s3.access_key": {
+        "c": "presence",
+        "v": "set"
+      },
+      "s3.bucket_name": {
+        "c": "plain",
+        "v": "kmu-ai"
+      },
+      "s3.endpoint": {
+        "c": "shape",
+        "v": "container:kmu-ai-minio"
+      },
+      "s3.secret_key": {
+        "c": "presence",
+        "v": "set"
+      },
+      "s3.secure": {
+        "c": "plain",
+        "v": false
+      }
+    }
+  },
+  "constants": {
+    "EMBEDDING_VERSION": "v1",
+    "INGEST_VERSION": "v1",
+    "RHWP_VERSION.dockerfile": "v0.8.2",
+    "RHWP_VERSION.python": "v0.8.2",
+    "frontend.version": "0.1.0",
+    "pyproject.version": "0.1.0"
+  },
+  "containers": {
+    "kmu-ai-api": {
+      "image_id": "sha256:206236fb9e27800c46073f0bbb76a6ce4a63556e034aeb679083637b23b79b63",
+      "image_ref": "jdone/kmu-ai-api:latest",
+      "labels": {},
+      "state": "running"
+    },
+    "kmu-ai-attu": {
+      "state": "absent"
+    },
+    "kmu-ai-frontend": {
+      "image_id": "sha256:eb6ea56bcded74bd981f9e132664b3c6149f0f700ac9e8c83abf4610b6ed689a",
+      "image_ref": "kmu-ai-frontend",
+      "labels": {},
+      "state": "running"
+    },
+    "kmu-ai-keycloak": {
+      "image_id": "sha256:82c5b7a110456dbd42b86ea572e728878549954cc8bd03cd65410d75328095d2",
+      "image_ref": "quay.io/keycloak/keycloak:25.0",
+      "labels": {
+        "org.opencontainers.image.created": "2024-09-19T17:57:00.824Z",
+        "org.opencontainers.image.description": "",
+        "org.opencontainers.image.documentation": "https://www.keycloak.org/documentation",
+        "org.opencontainers.image.licenses": "Apache-2.0",
+        "org.opencontainers.image.revision": "52687e78792330893533b608b727af1ed8c69836",
+        "org.opencontainers.image.source": "https://github.com/keycloak-rel/keycloak-rel",
+        "org.opencontainers.image.title": "keycloak-rel",
+        "org.opencontainers.image.url": "https://github.com/keycloak-rel/keycloak-rel",
+        "org.opencontainers.image.version": "25.0.6"
+      },
+      "state": "running"
+    },
+    "kmu-ai-keycloak-postgres": {
+      "image_id": "sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777",
+      "image_ref": "postgres:16-alpine",
+      "labels": {},
+      "state": "running"
+    },
+    "kmu-ai-milvus": {
+      "state": "absent"
+    },
+    "kmu-ai-milvus-etcd": {
+      "state": "absent"
+    },
+    "kmu-ai-milvus-minio": {
+      "state": "absent"
+    },
+    "kmu-ai-minio": {
+      "image_id": "sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e",
+      "image_ref": "minio/minio:RELEASE.2025-04-22T22-12-26Z",
+      "labels": {},
+      "state": "running"
+    },
+    "kmu-ai-pgadmin": {
+      "image_id": "sha256:8a68677a97b8c8d1427dc915672a26d2c4a04376916a68256f53d669d6171be7",
+      "image_ref": "dpage/pgadmin4:8.14",
+      "labels": {},
+      "state": "running"
+    },
+    "kmu-ai-postgres": {
+      "image_id": "sha256:907eb776401c7ec0d1685992a999849b7f2d76f7c900f5bc465509b121c15f87",
+      "image_ref": "kmu-ai-postgres-pgvector:16-3.4",
+      "labels": {
+        "org.opencontainers.image.description": "PostGIS 3.4.3+dfsg-2.pgdg110+1 spatial database extension with PostgreSQL 16 bullseye",
+        "org.opencontainers.image.source": "https://github.com/postgis/docker-postgis"
+      },
+      "state": "running"
+    },
+    "kmu-ai-redis": {
+      "image_id": "sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2",
+      "image_ref": "redis:7-alpine",
+      "labels": {},
+      "state": "running"
+    }
+  },
+  "db": {
+    "counts": {
+      "chat_sessions": 133,
+      "collections": 2,
+      "document_chunks_1024": 5359,
+      "documents": 181,
+      "faq_embeddings": 15,
+      "faq_items": 15,
+      "models": 3
+    },
+    "models": {
+      "kmu-chat": {
+        "model_id": "gemma-4-31b-it",
+        "model_type": "text_generation",
+        "provider": "gemini",
+        "status": "running"
+      },
+      "kmu-chat-gpu": {
+        "model_id": "gemma-4-31b-it-awq",
+        "model_type": "text_generation",
+        "provider": "openai_compatible",
+        "status": "running"
+      },
+      "kmu-embedding": {
+        "model_id": "nlpai-lab/KURE-v1",
+        "model_type": "embedding",
+        "provider": "local",
+        "status": "running"
+      }
+    },
+    "schema_fingerprint": "sha256:7810cff860f7e592854c8d9943d3de5e04a07a11c1a74104b7ccb7ac16c6aa59"
+  },
+  "env": "dev",
+  "images": {
+    "dpage/pgadmin4:8.14": {
+      "created": "2024-12-09T12:53:33.047470648Z",
+      "id": "sha256:8a68677a97b8c8d1427dc915672a26d2c4a04376916a68256f53d669d6171be7"
+    },
+    "jdone/kmu-ai-api:latest": {
+      "created": "2026-08-13T01:59:37.906508074Z",
+      "id": "sha256:206236fb9e27800c46073f0bbb76a6ce4a63556e034aeb679083637b23b79b63"
+    },
+    "jdone/vllm:latest": {
+      "state": "absent"
+    },
+    "kmu-ai-frontend:latest": {
+      "created": "2026-08-04T09:12:28.165072053Z",
+      "id": "sha256:eb6ea56bcded74bd981f9e132664b3c6149f0f700ac9e8c83abf4610b6ed689a"
+    },
+    "kmu-ai-postgres-pgvector:16-3.4": {
+      "created": "2026-08-05T02:59:19.650494633Z",
+      "id": "sha256:907eb776401c7ec0d1685992a999849b7f2d76f7c900f5bc465509b121c15f87"
+    },
+    "milvusdb/milvus:v2.5.14": {
+      "state": "absent"
+    },
+    "minio/minio:RELEASE.2024-05-28T17-19-04Z": {
+      "state": "absent"
+    },
+    "minio/minio:RELEASE.2025-04-22T22-12-26Z": {
+      "created": "2025-04-22T22:35:01.339428192Z",
+      "id": "sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e"
+    },
+    "postgres:16-alpine": {
+      "created": "2026-07-07T17:47:20.839800572Z",
+      "id": "sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777"
+    },
+    "quay.io/coreos/etcd:v3.5.18": {
+      "state": "absent"
+    },
+    "quay.io/keycloak/keycloak:25.0": {
+      "created": "2024-09-19T17:57:34.913960614Z",
+      "id": "sha256:82c5b7a110456dbd42b86ea572e728878549954cc8bd03cd65410d75328095d2"
+    },
+    "redis:7-alpine": {
+      "created": "2026-07-26T04:42:13.95278683Z",
+      "id": "sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2"
+    },
+    "zilliz/attu:v2.5": {
+      "state": "absent"
+    }
+  },
+  "probe_ok": true,
+  "runtime": {
+    "status": "ok"
+  },
+  "schema": 1
+}

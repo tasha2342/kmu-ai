@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "env": "prod",
+  "note": "아직 한 번도 수집되지 않았습니다. HIWARE 터널을 연 뒤 `python scripts/version_log.py probe --env prod` 를 돌리면 이 파일이 실제 사실로 채워집니다. captured_at 이 없는 동안에는 비교 대상이 아닙니다. 아래 expected_diff 는 미리 선언해 둔 것으로, 수집 후에도 보존됩니다.",
+  "expected_diff": [
+    {
+      "path": "db.models.kmu-chat-gpu.model_id",
+      "mode": "pin",
+      "dev": "gemma-4-31b-it-awq",
+      "prod": "google/gemma-4-31B-it",
+      "reason": "등록명은 같아도 가리키는 모델이 다릅니다. 운영은 H200 두 장에 로컬 가중치를 직접 띄우고, 개발은 KT 노드가 서빙하는 AWQ 양자화본을 씁니다. 값을 못 박아 두었으므로 한쪽이 바뀌면 STALE-RULE 로 다시 잡힙니다.",
+      "since": "2026-08-20"
+    },
+    {
+      "path": "db.models.kmu-chat-gpu.provider",
+      "mode": "pin",
+      "dev": "openai_compatible",
+      "prod": "local",
+      "reason": "운영은 pet-pass-one-node 가 GPU에 직접 띄우므로 provider=local 이고, 개발은 KT 노드의 OpenAI 호환 엔드포인트를 부르므로 openai_compatible 입니다. 호출 경로 자체가 다릅니다.",
+      "since": "2026-08-20"
+    },
+    {
+      "path": "db.models.kmu-chat",
+      "mode": "ignore",
+      "reason": "개발에만 등록된 Gemini(원격) 모델입니다. 폐쇄망에는 외부 API로 나갈 수 없어 운영에는 두지 않습니다.",
+      "since": "2026-08-20"
+    },
+    {
+      "path": "db.counts",
+      "mode": "ignore",
+      "reason": "지식베이스 내용은 코드 버전과 무관합니다. 운영은 규정 181건이 들어 있고 FAQ가 비어 있으며, 개발은 FAQ 목데이터가 있습니다. 세션 수도 계속 늘어납니다.",
+      "since": "2026-08-20"
+    },
+    {
+      "path": "images.jdone/vllm:latest",
+      "mode": "ignore",
+      "reason": "GPU 서빙 이미지는 운영에만 있습니다. 개발은 KT 노드가 대신 서빙하므로 이 이미지를 두지 않습니다.",
+      "since": "2026-08-20"
+    },
+    {
+      "path": "config.files.configs/config.yaml",
+      "mode": "ignore",
+      "reason": "DB 호스트·Keycloak 주소·프롬프트 예산이 환경마다 다르므로 파일 해시는 항상 어긋납니다. 실제 비교는 config.keys.* 의 개별 키로 합니다.",
+      "since": "2026-08-20"
+    },
+    {
+      "path": "config.files.configs/.env",
+      "mode": "ignore",
+      "reason": "위와 같습니다. 워커 수·임베딩 스레드 수가 호스트 사양에 맞춰 다릅니다.",
+      "since": "2026-08-20"
+    },
+    {
+      "path": "config.keys.env.WORKERS",
+      "mode": "ignore",
+      "reason": "호스트 사양에 맞춥니다. 개발 서버는 메모리가 좁아 1개가 한계이고, 운영은 더 올릴 수 있습니다. 워커마다 임베딩 모델을 따로 올리므로 메모리가 상한을 정합니다.",
+      "since": "2026-08-20"
+    },
+    {
+      "path": "config.keys.env.EMBEDDING_TORCH_THREADS",
+      "mode": "ignore",
+      "reason": "운영은 64코어라 16으로 올려 두었습니다. 2로 두면 규정 181건 색인이 한 시간 걸립니다.",
+      "since": "2026-08-20"
+    },
+    {
+      "path": "code.dirty_files.docker-compose.yml",
+      "mode": "pin",
+      "reason": "운영에서 /data/models:/app/resources/models 마운트를 직접 되살려 둔 상태입니다. LocalModel.is_downloaded() 가 이 경로를 보기 때문에 없으면 모델 실행이 막힙니다. 값이 바뀌면 누군가 compose 를 또 손댄 것이므로 STALE-RULE 로 다시 뜹니다.",
+      "since": "2026-08-20",
+      "todo": "docker-compose.prod.yml override 로 옮기고 이 규칙을 지울 것"
+    }
+  ]
+}
