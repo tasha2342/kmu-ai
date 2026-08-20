@@ -164,3 +164,7 @@ config.yaml
 eval/judge_cache/
 eval/judge_batches/
 eval/results/
+
+# version_log.py probe 가 중간에 끊겼을 때 남는 원본 수집물.
+# 감사(audit)를 아직 안 거친 상태라 커밋되면 안 된다.
+ops/.probe-*.json

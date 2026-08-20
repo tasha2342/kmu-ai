@@ -50,6 +50,9 @@ COMPARE_PREFIXES = (
 # (dirty_watch)만 비교하고 전체 목록은 조회용으로만 둔다.
 # 매번 달라지는 값. 비교하면 항상 드리프트로 뜬다.
 VOLATILE_SUFFIXES = (".created", ".started_at")
+# 같은 사실을 두 번 세는 경로. code.commit 접두사가 code.commit_short 에도 걸리고,
+# containers.*.image_id 와 images.*.id 는 같은 sha 다. 한 번만 센다.
+DUPLICATE_PATHS = ("code.commit_short",)
 
 # 공개 리포에 절대 들어가면 안 되는 것. record 전에 이 검사를 통과해야 한다.
 FORBIDDEN = [
@@ -127,6 +130,8 @@ def flatten(doc, prefix=""):
 
 
 def comparable(path):
+    if path in DUPLICATE_PATHS:
+        return False
     if any(path.endswith(s) for s in VOLATILE_SUFFIXES):
         return False
     return any(path.startswith(p) for p in COMPARE_PREFIXES)
@@ -365,7 +370,7 @@ def probe_dev(cfg):
     수집기를 매번 올린 뒤 실행한다. 대상 리포가 이 스크립트보다 옛 커밋일 수 있어서
     (수집기를 막 만든 지금이 정확히 그 경우다) 리포 안의 사본에 기대면 안 된다.
     """
-    host = cfg.get("YS_HOST", "192.168.0.183")
+    host = cfg["YS_HOST"]  # ops/local.env 에서만 온다. 기본값을 코드에 두면 공개 리포에 사설 IP가 박힌다
     user = cfg.get("YS_USER", "jdone")
     repo = cfg.get("YS_REPO", "~/repos/kmu-ai")
     target = "%s@%s" % (user, host)
@@ -443,7 +448,7 @@ def probe_prod(cfg):
 
 def cmd_probe(args):
     cfg = load_local_env()
-    need = ["YS_PASSWORD", "YS_HOSTKEY"] if args.env == "dev" else ["PROD_PASSWORD", "PROD_HOSTKEY"]
+    need = ["YS_HOST", "YS_PASSWORD", "YS_HOSTKEY"] if args.env == "dev" else ["PROD_PASSWORD", "PROD_HOSTKEY"]
     missing = [k for k in need if k not in cfg]
     if missing:
         out("ops/local.env 에 %s 가 필요합니다. (커밋되지 않는 파일)" % ", ".join(missing))

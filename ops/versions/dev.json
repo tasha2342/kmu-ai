@@ -1,9 +1,9 @@
 {
-  "captured_at": "2026-08-20T01:54:25+00:00",
+  "captured_at": "2026-08-20T02:23:38+00:00",
   "code": {
     "branch": "main",
-    "commit": "03bb9324369cf2e56a2ad2e246aa864a30138de9",
-    "commit_short": "03bb932",
+    "commit": "274474e2f7c7e15a52160fabe98e3931cc4468f0",
+    "commit_short": "274474e",
     "dirty": false,
     "dirty_counts": {
       "modified": 0,
@@ -14,6 +14,7 @@
   },
   "config": {
     "files": {
+      ".env": "sha256:68a515af690c3bf5b7079a879cde77060c44f92a8b112a22f7b2d9f178d5fd4c",
       "Dockerfile": "sha256:b3a14bd7c62b0f22098b0f4f24eb5559a4fcab224dfe25504860c5ee967a8258",
       "configs/.env": "sha256:a01ac96ed6885b977ced8a567b70b63b8ba4e376f443b7b739e9385114501750",
       "configs/config.yaml": "sha256:008043efe9ced7e860a5162e92883c83eea5f431705c3a44b778ec5cca6e6155",
@@ -87,6 +88,22 @@
       "chatbot.top_k": {
         "c": "plain",
         "v": 5
+      },
+      "compose_env.EMBEDDING_TORCH_THREADS": {
+        "c": "plain",
+        "v": 2
+      },
+      "compose_env.ENABLE_SESSION_IDLE_TIMEOUT": {
+        "c": "plain",
+        "v": true
+      },
+      "compose_env.SESSION_IDLE_TIMEOUT_MINUTES": {
+        "c": "plain",
+        "v": 30
+      },
+      "compose_env.WORKERS": {
+        "c": "plain",
+        "v": 1
       },
       "database.db_type": {
         "c": "plain",

@@ -24,7 +24,7 @@
 - `shape`    분류 토큰만. 호스트·URL이 대상. `container:kmu-ai-redis` 처럼 남는다.
 - `presence` `set`/`unset` 만. 비밀번호·시크릿·API 키.
 
-**저엔트로피 값은 해시도 남기지 않는다.** `192.168.0.183` 의 SHA-256은 IPv4 전수(2^32)로
+**저엔트로피 값은 해시도 남기지 않는다.** 사설 IP 하나의 SHA-256은 IPv4 전수(2^32)로
 수 초 만에 역산되고, 비밀번호 해시는 공개 리포에 놓인 오프라인 크래킹 표적이 된다.
 그래서 호스트는 해시가 아니라 `shape` 다. 반면 **파일 전체 해시**는 원본이 크고 추측
 불가라 안전하며, "뭔가 바뀌었다"는 굵은 신호로 쓴다.
@@ -366,7 +366,8 @@ def collect_docker(container_names, image_refs):
 
 def collect_config(repo, container_names):
     files = {}
-    for rel in ("configs/config.yaml", "configs/.env", "docker-compose.yml", "Dockerfile"):
+    for rel in ("configs/config.yaml", "configs/.env", ".env",
+                "docker-compose.yml", "Dockerfile"):
         digest = sha256_file(os.path.join(repo, rel))
         if digest:
             files[rel] = digest
@@ -379,20 +380,25 @@ def collect_config(repo, container_names):
             if entry:
                 keys[path] = entry
 
-    # .env 는 값이 아니라 키 단위로만 본다
-    env_path = os.path.join(repo, "configs", ".env")
-    try:
-        with open(env_path, encoding="utf-8") as fp:
-            for line in fp:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, _, v = line.partition("=")
-                k = k.strip()
-                if k in ENV_KEYS:
-                    keys["env." + k] = {"c": "plain", "v": coerce(v.strip().strip('"'))}
-    except OSError:
-        pass
+    # .env 는 두 개다. 둘 다 봐야 한다.
+    #   configs/.env  앱(launch.sh)이 읽는다
+    #   .env(리포 루트)  docker compose 가 변수 치환에 쓴다 (WORKERS, EMBEDDING_TORCH_THREADS 등)
+    # 하나만 보면 "운영에서 임베딩 스레드를 16으로 올렸다" 같은 변경을 통째로 놓친다.
+    for label, rel in (("env", os.path.join("configs", ".env")),
+                       ("compose_env", ".env")):
+        try:
+            with open(os.path.join(repo, rel), encoding="utf-8") as fp:
+                for line in fp:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, _, v = line.partition("=")
+                    k = k.strip()
+                    if k in ENV_KEYS:
+                        keys["%s.%s" % (label, k)] = {
+                            "c": "plain", "v": coerce(v.strip().strip('"'))}
+        except OSError:
+            pass
 
     return {"files": files, "keys": keys}
 

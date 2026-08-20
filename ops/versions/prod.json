@@ -1,5 +1,5 @@
 {
-  "captured_at": "2026-08-20T10:55:13+09:00",
+  "captured_at": "2026-08-20T11:24:26+09:00",
   "code": {
     "branch": "main",
     "commit": "b9c5b3fb049899e6c6b837d44bd157d9d5797c79",
@@ -307,6 +307,7 @@
   },
   "config": {
     "files": {
+      ".env": "sha256:c006357e7e2f0085453072a27d54d62612d49dc6d726a1906b5a6a07c7d0514e",
       "Dockerfile": "sha256:116e8973a122fe17300d62153e56ab129aaa9f3ad6fc7c0be1b9b6fc080a2f90",
       "configs/.env": "sha256:a01ac96ed6885b977ced8a567b70b63b8ba4e376f443b7b739e9385114501750",
       "configs/config.yaml": "sha256:3c4997af82c6ca1e4b6023844e480f02b583929877728907a088d2d54940636e",
@@ -380,6 +381,22 @@
       "chatbot.top_k": {
         "c": "plain",
         "v": 5
+      },
+      "compose_env.EMBEDDING_TORCH_THREADS": {
+        "c": "plain",
+        "v": 16
+      },
+      "compose_env.ENABLE_SESSION_IDLE_TIMEOUT": {
+        "c": "plain",
+        "v": true
+      },
+      "compose_env.SESSION_IDLE_TIMEOUT_MINUTES": {
+        "c": "plain",
+        "v": 30
+      },
+      "compose_env.WORKERS": {
+        "c": "plain",
+        "v": 1
       },
       "database.db_type": {
         "c": "plain",
@@ -607,75 +624,77 @@
       "since": "2026-08-20"
     },
     {
-      "mode": "ignore",
-      "path": "config.files.configs/.env",
-      "reason": "위와 같습니다. 워커 수·임베딩 스레드 수가 호스트 사양에 맞춰 다릅니다.",
-      "since": "2026-08-20"
-    },
-    {
-      "mode": "ignore",
-      "path": "config.keys.env.WORKERS",
-      "reason": "호스트 사양에 맞춥니다. 개발 서버는 메모리가 좁아 1개가 한계이고, 운영은 더 올릴 수 있습니다. 워커마다 임베딩 모델을 따로 올리므로 메모리가 상한을 정합니다.",
-      "since": "2026-08-20"
-    },
-    {
-      "mode": "ignore",
-      "path": "config.keys.env.EMBEDDING_TORCH_THREADS",
-      "reason": "운영은 64코어라 16으로 올려 두었습니다. 2로 두면 규정 181건 색인이 한 시간 걸립니다.",
-      "since": "2026-08-20"
-    },
-    {
-      "path": "code.dirty_counts.modified",
-      "mode": "pin",
       "dev": 0,
+      "mode": "pin",
+      "path": "code.dirty_counts.modified",
       "prod": 286,
       "reason": "운영 리포는 Windows 에서 tar 로 옮겨져 텍스트 파일이 전부 CRLF 다. 리포는 LF 로 보관하므로 내용이 같아도 수정됨으로 잡힌다. git diff --ignore-all-space 로 실질 변경이 0줄임을 확인했다. 이 숫자가 변하면 진짜 수정이 생긴 것이다.",
       "since": "2026-08-20",
       "todo": "운영에서 줄끝을 정규화할 것. 지금은 git status 가 사실상 못 쓰는 상태라 진짜 수정이 묻히고, git pull 하면 전 파일이 충돌한다."
     },
     {
-      "path": "code.dirty_counts.untracked",
-      "mode": "pin",
       "dev": 0,
+      "mode": "pin",
+      "path": "code.dirty_counts.untracked",
       "prod": 3,
       "reason": "운영에만 있는 미추적 파일(전송 잔여물). 개수가 늘면 누군가 파일을 더 올린 것이다.",
       "since": "2026-08-20"
     },
     {
-      "path": "code.dirty_watch.docker-compose.yml",
       "mode": "pin",
+      "path": "code.dirty_watch.docker-compose.yml",
       "prod": "e6ce6c3c28366cb855492edbb534d23bba92376e",
       "reason": "운영에서 /data/models:/app/resources/models 마운트를 직접 되살려 둔 상태다. LocalModel.is_downloaded() 가 이 경로를 보기 때문에 없으면 모델 실행이 막힌다. 값을 못 박아 두었으니 compose 를 또 손대면 STALE-RULE 로 뜬다.",
       "since": "2026-08-20",
       "todo": "docker-compose.prod.yml override 로 옮기고 이 규칙을 지울 것"
     },
     {
-      "path": "code.dirty_watch.Dockerfile",
       "mode": "pin",
+      "path": "code.dirty_watch.Dockerfile",
       "prod": "fe63a3a265b1453d5f888f17e5a1cb017f015a1c",
       "reason": "운영 리포는 Windows 에서 tar 로 옮겨져 텍스트 파일이 전부 CRLF 다. 리포는 LF 로 보관하므로 내용이 같아도 수정됨으로 잡힌다. git diff --ignore-all-space 로 실질 변경이 0줄임을 확인했다.",
       "since": "2026-08-20",
       "todo": "운영에서 줄끝을 정규화할 것. 지금은 git status 가 사실상 못 쓰는 상태라 진짜 수정이 묻히고, git pull 하면 전 파일이 충돌한다."
     },
     {
-      "path": "config.files.Dockerfile",
       "mode": "ignore",
+      "path": "config.files.Dockerfile",
       "reason": "운영 리포는 Windows 에서 tar 로 옮겨져 텍스트 파일이 전부 CRLF 다. 리포는 LF 로 보관하므로 내용이 같아도 수정됨으로 잡힌다. git diff --ignore-all-space 로 실질 변경이 0줄임을 확인했다. 파일 전체 해시라 줄끝만 달라도 어긋난다.",
       "since": "2026-08-20",
       "todo": "운영에서 줄끝을 정규화할 것. 지금은 git status 가 사실상 못 쓰는 상태라 진짜 수정이 묻히고, git pull 하면 전 파일이 충돌한다."
     },
     {
-      "path": "config.files.docker-compose.yml",
       "mode": "ignore",
+      "path": "config.files.docker-compose.yml",
       "reason": "CRLF 와 /data/models 마운트가 겹쳐 해시로는 분리할 수 없다. 실제 내용 비교는 code.dirty_watch.docker-compose.yml 이 담당한다.",
       "since": "2026-08-20"
     },
     {
-      "path": "containers.kmu-ai-frontend.image_ref",
-      "mode": "pin",
       "dev": "kmu-ai-frontend",
+      "mode": "pin",
+      "path": "containers.kmu-ai-frontend.image_ref",
       "prod": "kmu-ai-frontend:latest",
       "reason": "같은 이미지다. 개발은 compose 가 빌드해 태그 없이 기록하고, 운영은 docker load 로 올린 :latest 를 쓴다. 실제 동일성은 image_id 로 본다.",
+      "since": "2026-08-20"
+    },
+    {
+      "path": "config.keys.compose_env.EMBEDDING_TORCH_THREADS",
+      "mode": "pin",
+      "dev": 2,
+      "prod": 16,
+      "reason": "호스트 사양에 맞춘 값이다. 운영은 64코어라 16으로 올려 두었다. 2로 두면 규정 181건 색인이 한 시간 걸린다. 개발 서버는 코어가 적어 2가 적정하다.",
+      "since": "2026-08-20"
+    },
+    {
+      "path": "config.files..env",
+      "mode": "ignore",
+      "reason": "compose 가 읽는 루트 .env. 워커 수·임베딩 스레드 수가 호스트 사양에 맞춰 다르므로 파일 해시는 항상 어긋난다. 실제 비교는 config.keys.compose_env.* 의 개별 키로 한다.",
+      "since": "2026-08-20"
+    },
+    {
+      "path": "config.keys.compose_env.WORKERS",
+      "mode": "ignore",
+      "reason": "호스트 메모리가 상한을 정한다. 워커마다 임베딩 모델을 따로 올리므로(KURE-v1 약 2.2GB) 코어 수가 아니라 가용 메모리로 정한다.",
       "since": "2026-08-20"
     }
   ],
