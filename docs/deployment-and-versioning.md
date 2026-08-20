@@ -282,6 +282,7 @@ Maximum concurrency for 65,536 tokens per request: 9.29x
 ### 실측 (2026-08-20, `scripts/loadtest.py`)
 
 위 표는 KV 캐시 상한일 뿐이라 **실제로 재 봤다.** 운영 서버에서 직접 돌린 값이다.
+측정 방법과 해석·주의점은 [`serving-performance.md`](serving-performance.md) 에 있다.
 
 ```bash
 python3 scripts/loadtest.py --mode vllm    --max-tokens 256   # 모델만
@@ -352,6 +353,7 @@ DRIFT 0 / STALE-RULE 0 / 선언된 차이 23
 ## 관련 문서
 
 - [`version-drift-tracking.md`](version-drift-tracking.md) — 이 체계를 왜 이렇게 만들었는지 (배경·설계 판단·한계)
+- [`serving-performance.md`](serving-performance.md) — H200 ×2 TTFT/처리량 실측 (방법·결과·측정 함정)
 - [`local-document-parsing.md`](local-document-parsing.md) — HWP/PDF 로컬 파싱
 - [`rag-management-api.md`](rag-management-api.md) — 지식베이스 관리 API
 - [`regulation_rag_eval.md`](regulation_rag_eval.md) — 규정 검색 평가
