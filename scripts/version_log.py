@@ -41,10 +41,13 @@ LOCAL_ENV = os.path.join(REPO, "ops", "local.env")
 
 # 이 접두사로 시작하는 경로만 비교한다. 나머지는 참고용 기록일 뿐이다.
 COMPARE_PREFIXES = (
-    "code.commit", "code.dirty", "code.dirty_files.",
+    "code.commit", "code.dirty_counts.", "code.dirty_watch.",
     "constants.", "config.files.", "config.keys.",
     "containers.", "images.", "db.",
 )
+# code.dirty_files 는 일부러 뺐다. 운영은 CRLF 전환으로 280개 파일이 내용은 같은데도
+# 수정됨으로 잡혀, 비교하면 경고가 300건씩 뜬다. 개수(dirty_counts)와 중요 파일
+# (dirty_watch)만 비교하고 전체 목록은 조회용으로만 둔다.
 # 매번 달라지는 값. 비교하면 항상 드리프트로 뜬다.
 VOLATILE_SUFFIXES = (".created", ".started_at")
 

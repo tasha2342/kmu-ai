@@ -1,11 +1,16 @@
 {
-  "captured_at": "2026-08-20T01:43:18+00:00",
+  "captured_at": "2026-08-20T01:54:25+00:00",
   "code": {
     "branch": "main",
-    "commit": "ec4adc37d5e45a5f442567a6043655aac1d74616",
-    "commit_short": "ec4adc3",
+    "commit": "03bb9324369cf2e56a2ad2e246aa864a30138de9",
+    "commit_short": "03bb932",
     "dirty": false,
-    "dirty_files": {}
+    "dirty_counts": {
+      "modified": 0,
+      "untracked": 0
+    },
+    "dirty_files": {},
+    "dirty_watch": {}
   },
   "config": {
     "files": {

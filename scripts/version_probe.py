@@ -90,6 +90,19 @@ ENV_KEYS = [
 EXTRA_IMAGES = ["jdone/vllm:latest"]
 """compose 에 없지만 추적해야 하는 이미지. GPU 서빙 이미지는 운영에만 있다."""
 
+WATCH_FILES = [
+    "docker-compose.yml",
+    "Dockerfile",
+    "configs/config.yaml",
+    "configs/.env",
+]
+"""서버에서 손으로 고쳤는지 **개별로** 봐야 하는 파일.
+
+나머지 수정 파일은 개수만 센다. 운영은 Windows 에서 tar 로 옮기며 CRLF 가 되어
+280개 파일이 내용은 같은데도 "수정됨"으로 잡히기 때문이다. 이걸 전부 비교하면
+경고가 300건씩 떠서 사람이 곧 무시하게 된다.
+"""
+
 
 # ── 실행 도우미 ────────────────────────────────────────────────────────────
 def run(cmd, cwd=None, timeout=60):
@@ -267,20 +280,29 @@ def collect_code(repo):
     _, porcelain = run(["git", "status", "--porcelain"], cwd=repo)
 
     dirty_files = {}
+    modified = untracked = 0
     for line in porcelain.splitlines():
         if len(line) < 4:
             continue
-        path = line[3:].strip().strip('"')
-        # 서버에서 손으로 고친 파일은 내용 해시까지 남긴다.
-        # (운영의 docker-compose.yml 이 실제로 이 경우다 — /data/models 마운트를 되살렸다)
+        status, path = line[:2], line[3:].strip().strip('"')
+        if status == "??":
+            untracked += 1
+            dirty_files[path] = "UNTRACKED"
+            continue
+        modified += 1
         blob_ok, blob = run(["git", "hash-object", path], cwd=repo)
-        dirty_files[path] = blob if blob_ok else "UNTRACKED"
+        dirty_files[path] = blob if blob_ok else "UNREADABLE"
 
     return {
         "branch": branch,
         "commit": commit,
         "commit_short": commit[:7],
         "dirty": bool(dirty_files),
+        # 파일 단위로 전부 비교하면 못 쓴다. 운영은 Windows 에서 tar 로 옮기며 줄끝이
+        # CRLF 로 바뀌어 280개 파일이 통째로 "수정됨"으로 잡힌다. 내용은 같은데도.
+        # 그래서 비교는 아래 두 가지로만 하고, 파일 목록은 조회용으로만 남긴다.
+        "dirty_counts": {"modified": modified, "untracked": untracked},
+        "dirty_watch": {p: dirty_files[p] for p in WATCH_FILES if p in dirty_files},
         "dirty_files": dirty_files,
     }
 
