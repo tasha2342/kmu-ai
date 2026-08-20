@@ -68,13 +68,15 @@ ops/local.env             접속 자격증명. 커밋 안 됨 (.git/info/exclude
 | `containers.*` (이미지 ID·라벨·상태), `images.*` | `*.created`, `*.started_at` |
 | `db.*` (카운트·모델·스키마 지문) | |
 
-**태그가 아니라 이미지 ID로 비교한다.** compose 가 전부 `:latest` 를 쓰고 운영 이미지는
-레지스트리를 거치지 않고 `docker save`/`load` 로 손으로 나르기 때문에 태그로는 아무것도
-알 수 없다. 그런데 **save/load 는 이미지 ID를 보존**하므로, 같은 빌드면 개발과 운영에서
-ID가 같다. 폐쇄망을 건너 동일성을 확인할 수 있는 유일한 식별자다.
+**태그로는 아무것도 알 수 없다.** compose 가 전부 `:latest` 를 쓰고 운영 이미지는
+레지스트리를 거치지 않고 `docker save`/`load` 로 손으로 나르기 때문이다.
 
-컨테이너가 *실제로 돌리는* ID를 기록하므로, `containers.X.image_id != images.Y.id` 이면
-**"빌드는 했는데 재시작을 안 한"** 상태도 잡힌다.
+신원은 **OCI 라벨 `org.opencontainers.image.revision`**(전체 커밋 sha)로 본다.
+원래는 이미지 ID 를 쓰려 했으나 도커 버전이 다르면 보존되지 않는다 — 자세한 실측은
+[§4 신원은 이미지 ID 가 아니라 OCI 라벨로 본다](#신원은-이미지-id-가-아니라-oci-라벨로-본다).
+
+`image_id` 는 **같은 호스트 안에서만** 의미가 있다. 컨테이너가 *실제로 돌리는* ID 와
+태그가 가리키는 ID 가 다르면 **"빌드는 했는데 재시작을 안 한"** 상태다.
 
 ### 의도된 차이 (`expected_diff`)
 
@@ -130,26 +132,53 @@ ID가 같다. 폐쇄망을 건너 동일성을 확인할 수 있는 유일한 �
 **빌드는 인터넷이 있는 곳에서 하고, 이미지를 파일로 날라서 `docker load` 한다.**
 
 ```
-1. 빌드      ys(정석) 또는 중계 PC 에서 이미지 빌드
-             ★ Windows 에서 빌드할 때는 반드시 git archive 로 LF 트리를 뽑아 쓸 것.
-               작업 트리는 CRLF 라 ENTRYPOINT(scripts/launch.sh) 의 shebang 이 깨진다.
-2. 태그      Jenkins 와 같은 체계로: YYYYMMDD-<짧은sha>
-3. 저장      docker save | gzip   (비압축은 크다. 압축하면 대략 1/2)
-4. 전송      HIWARE 터널로 pscp. ★ -share 금지 (연결이 죽는다)
-5. 적재      운영에서 gunzip → docker load → 같은 버전 태그로 재태그
-6. 재시작    docker compose up -d <서비스>
-7. 기록      /version-check 로 재수집 후 커밋
+1. 빌드 컨텍스트   git -c core.autocrlf=false -c core.eol=lf archive HEAD | tar -x -C <dir>
+                   ★ 그냥 `git archive` 는 LF 를 보장하지 않는다. core.autocrlf=true 면
+                     체크아웃과 같은 변환을 적용해 CRLF 로 나온다. (2026-08-20 에 이걸로
+                     운영을 크래시 루프에 빠뜨렸다)
+2. 검증           CR 바이트를 직접 센다. 0 이어야 한다:
+                     tr -cd "\r" < <dir>/scripts/launch.sh | wc -c
+                   ★ grep 으로 CR 을 찾는 방식은 셸 이스케이프에 따라 조용히 오답을 낸다.
+                     실제로 그 검증이 통과해서 CRLF 이미지를 운영에 배포했다.
+                     작업 트리(CR>0)와 대비해 확인하면 확실하다.
+3. 빌드           docker build --provenance=false --sbom=false ...
+                   OCI 라벨에 revision(전체 sha)과 version(YYYYMMDD-짧은sha)을 굽는다.
+4. 기동 확인       docker run 으로 실제로 띄워 본다. ASCII 로고가 뜨면 ENTRYPOINT 정상.
+                   (설정 파일 오류는 볼륨 없이 단독 실행해서 나는 것이라 무시)
+5. 저장           docker save | gzip   (1.6GB → 557MB)
+6. 전송           HIWARE 터널로 pscp. ★ -share 금지 (연결이 죽는다)
+7. 적재           gunzip | docker load → 같은 버전 태그로 재태그
+                   ★ 적재 후 OCI 라벨의 revision 이 기대한 커밋과 같은지 확인하고 진행할 것
+8. 재시작         docker compose up -d --no-build --force-recreate <서비스>
+9. 검증           status/restarts, /health, 실제 질의
+10. 기록          /version-check 로 재수집 후 커밋
 ```
+
+**롤백 준비**: 배포 전 이미지 ID를 적어 둔다. 크래시 루프가 나면
+`docker tag <이전ID> jdone/kmu-ai-api:latest && docker compose up -d --force-recreate` 로
+1분 안에 되돌아간다.
 
 **앱 코드는 이미지에 구워져 있다.** compose 가 마운트하는 것은 `static`·`configs`·
 `resources`·`logs` 뿐이라, 코드 한 줄을 바꿔도 이미지를 다시 만들어야 한다.
 그래서 **특정 커밋만 골라 배포할 수 없다** — 이미지는 그 시점 브랜치 전체를 담는다.
 
-### 왜 이미지 ID 가 개발·운영에서 같아야 하나
+### 신원은 이미지 ID 가 아니라 **OCI 라벨**로 본다
 
-같은 빌드를 양쪽에 `load` 하면 `image_id` 가 일치해서 추적 시스템이 조용해진다.
-각자 따로 빌드하면 내용이 같아도 ID가 달라 영원히 드리프트로 뜬다.
-**한 번 빌드해서 양쪽에 올리는 것**이 원칙이다.
+원래 이미지 ID 로 비교하려 했으나, 실측 결과 **도커 버전이 다르면 보존되지 않는다.**
+
+| 경로 | 결과 |
+| --- | --- |
+| 로컬 26.0.0 → 로컬 26.0.0 왕복 | 보존 (`19242ae9` 동일) |
+| 로컬 26.0.0 → 운영 29.7.2 | **불일치** (`19242ae9` → `02107de3`) |
+| BuildKit 어테스테이션 포함 빌드 | **불일치** (`--provenance=false` 로 해결) |
+
+적재하는 데몬이 config 를 재정규화하면 ID가 바뀐다. 그래서 신원은
+`org.opencontainers.image.revision`(전체 커밋 sha) 라벨로 본다. 라벨은 config 안에 있어
+버전이 달라도 그대로 남고, 커밋까지 담고 있어 이미지 ID보다 낫다. 실제로 양쪽에서
+동일함을 확인했다.
+
+`image_id` 는 **같은 호스트 안에서만** 의미가 있다 —
+`containers.X.image_id != images.Y.id` 이면 "빌드는 했는데 재시작을 안 한" 상태다.
 
 ## 5. Jenkins CI/CD 현황
 
@@ -206,27 +235,66 @@ Windows 에서 `tar` 로 옮기며 줄끝이 딸려 갔다. 리포는 LF 로 보
 - **모델은 DB 등록이라 코드로 알 수 없다.** 같은 커밋이어도 `models` 테이블이 다르면
   동작이 다르다. 그래서 `db.models` 를 이름 키 사전으로 기록한다.
 
-## 7. 2026-08-20 기준 드리프트
+## 7. 모델 서빙 용량 (H200 ×2)
+
+`max-model-len` 을 32,768 → 65,536 으로 올렸다. 프롬프트 예산을 키우면
+(evidence 20,000 + history 6,000 + query 8,000 = 34,000자) 한국어는 글자당 토큰 비율이
+높아 32,768 상한을 넘길 수 있어서다.
+
+vLLM 이 기동하며 실제로 재는 값이 로그에 남는다. **이게 권위 있는 수치다.**
 
 ```
-dev  274474e  clean
-prod b9c5b3f  +289수정(대부분 CRLF)
-DRIFT 4 / STALE-RULE 0 / 선언된 차이 22
+GPU KV cache size: 609,100 tokens
+Maximum concurrency for 65,536 tokens per request: 9.29x
 ```
 
-> `DRIFT 4` 는 서로 다른 사실 **3개**다. `containers.kmu-ai-api.image_id` 와
-> `images.jdone/kmu-ai-api:latest.id` 가 같은 sha 를 두 경로로 센다.
-> (그 둘이 **다를** 때가 "빌드는 했는데 재시작 안 함" 신호라 일부러 둘 다 본다)
+동시 처리 수 = **609,100 ÷ 요청당 토큰 수**.
 
-| 항목 | 개발 | 운영 |
+| 요청 크기 | 동시 처리 | 해당하는 상황 |
 | --- | --- | --- |
-| `code.commit` | `03bb932` | `b9c5b3f` — 8커밋 뒤처짐 |
-| `chatbot.evidence_max_chars` | 20000 | 12000 |
-| `containers.kmu-ai-api.image_id` | `sha256:206236fb…` | `sha256:12aa272f…` |
+| 65,536 토큰 (상한) | **9.3** | 컨텍스트를 꽉 채운 요청. 실제로는 거의 없다 |
+| 34,000 토큰 (예산 상한) | **17.9** | 근거 20,000자를 다 채운 최악의 질의 |
+| 8,000 토큰 | **76** | 근거가 많이 잡히는 일반 규정 질의 |
+| 2,000 토큰 | **304** | 짧은 질의·잡담 |
 
-운영에 없는 것 중 급한 것은 **`f073523` (규정 재색인 잡 + 학생 말투 동의어 확장)** 이다.
-그 재색인 잡은 "181문서 중 45문서만 적재된 채 8일 방치"를 잡으려고 만든 안전장치인데
-정작 운영에 없다.
+실사용은 대부분 세 번째·네 번째 줄이므로 **수십 명 동시 사용은 여유롭다.**
+다만 이 수치는 KV 캐시 상한일 뿐이고, 실제 처리량은 GPU 연산과
+`--max-num-seqs` 설정에도 걸린다.
+
+### 왜 609,100 인가
+
+이 모델은 레이어마다 어텐션 구조가 다르다.
+
+| 레이어 | 개수 | head_dim | KV heads | 비고 |
+| --- | --- | --- | --- | --- |
+| sliding_attention | 50 | 256 | 16 | 윈도우 1,024 로 잘려 시퀀스당 비용이 고정 |
+| full_attention | 10 | **512** | 4 | `attention_k_eq_v=true` — K 를 V 로 재사용 |
+
+토큰당 비용을 지배하는 것은 **full_attention 10개 레이어**다. sliding 레이어는 윈도우가
+1,024 라 시퀀스가 길어져도 더 늘지 않는다. 여기에 텐서 병렬 2로 KV 헤드가 두 GPU 에
+쪼개지고, `gpu_memory_utilization=0.85` 에서 가중치(62GB)를 뺀 나머지가 KV 캐시로 간다.
+
+> 손으로 계산한 값은 vLLM 수치와 정확히 맞지 않았다. 블록 할당·예약 오버헤드가 더 있어서다.
+> **용량 판단은 위 로그 값을 기준으로 하고, 이 표는 어느 항목이 비용을 지배하는지 이해하는
+> 용도로만 쓴다.** 설정을 바꾼 뒤에는 로그를 다시 읽어 확인할 것.
+
+
+## 8. 2026-08-20 기준 드리프트
+
+배포 후 상태다.
+
+```
+dev  a35b8f6  clean
+prod a35b8f6  +4수정(운영 전용 파일)
+DRIFT 0 / STALE-RULE 0 / 선언된 차이 23
+```
+
+`f073523`(규정 재색인 잡 + 학생 말투 동의어 확장)이 운영에 반영됐고,
+`evidence_max_chars` 를 20,000 으로 올렸다. 운영 리포의 CRLF 286건은 git bundle 로
+리포를 갱신하며 해소됐다(수정 파일 286 → 0).
+
+운영에만 남은 미추적 파일 4건은 `docker-compose.override.yml`(`/data/models` 마운트)과
+설정 백업 3건이다. override 로 옮긴 덕분에 앞으로 `git reset` 에 지워지지 않는다.
 
 ## 관련 문서
 
