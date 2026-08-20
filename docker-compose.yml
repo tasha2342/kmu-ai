@@ -1,12 +1,24 @@
 services:
   kmu-ai-api:
     container_name: kmu-ai-api
-    image: jdone/kmu-ai-api:latest
+    # 이미지 이름·태그를 변수로 둔다. Jenkins 는 harbor.jdone.co.kr/backend/kmu-ai-api 로
+    # 푸시하는데 여기는 jdone/kmu-ai-api 를 쓰고 있어 태그 체계와 실행 설정이 끊겨 있었다.
+    # 기본값은 기존과 같으므로 아무것도 설정하지 않으면 동작이 바뀌지 않는다.
+    image: ${KMU_AI_IMAGE:-jdone/kmu-ai-api}:${KMU_AI_VERSION:-latest}
     build:
       context: .
       dockerfile: Dockerfile
       args:
         ENABLE_OBFUSCATION: false # 코드 난독화 여부
+        # 빌드한 산출물이 어느 커밋인지 이미지 안에 남긴다. scripts/build.sh 가 채운다.
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        IMAGE_VERSION: ${KMU_AI_VERSION:-dev}
+      # 폐쇄망에서는 이미지 ID 가 도커 버전이 다르면 보존되지 않아(문서 참고) 이 라벨이
+      # 개발·운영이 같은 산출물인지 확인하는 유일한 근거다. 반드시 함께 구울 것.
+      labels:
+        org.opencontainers.image.revision: ${GIT_COMMIT:-unknown}
+        org.opencontainers.image.version: ${KMU_AI_VERSION:-dev}
+        org.opencontainers.image.title: kmu-ai-api
     restart: unless-stopped
     depends_on:
       postgres:

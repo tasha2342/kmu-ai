@@ -1,5 +1,27 @@
 {
-  "captured_at": "2026-08-20T13:28:05+09:00",
+  "assertions": [
+    {
+      "equals": "production",
+      "path": "config.keys.env.APP_ENV.v",
+      "reason": "운영 서버인데 development 로 돌고 있었다. 개발과 값이 같아 드리프트로 잡히지 않았던 항목이라 절대 기준으로 못 박는다. 동작에 영향은 없고 기동 로그 한 줄에만 쓰이지만(app/main.py), 지금 어디를 보고 있는지 헷갈리게 한다."
+    },
+    {
+      "equals": 1024,
+      "path": "config.keys.chatbot.embedding_dim.v",
+      "reason": "faq_embeddings.embedding 컬럼과 HNSW 인덱스에 고정 연결돼 있다. 바뀌면 컬럼/인덱스 재생성 + 전량 재색인이 필요하므로 조용히 달라져서는 안 된다."
+    },
+    {
+      "equals": "running",
+      "path": "db.models.kmu-embedding.status",
+      "reason": "임베딩 모델이 멈추면 FAQ·규정 검색이 통째로 죽는다."
+    },
+    {
+      "equals": "running",
+      "path": "db.models.kmu-chat-gpu.status",
+      "reason": "응답 생성 모델. 멈추면 모든 질문이 미응답으로 떨어진다."
+    }
+  ],
+  "captured_at": "2026-08-20T13:43:21+09:00",
   "code": {
     "branch": "main",
     "commit": "a35b8f63b9df934acecf545e65251465191e16b4",
@@ -7,10 +29,11 @@
     "dirty": true,
     "dirty_counts": {
       "modified": 0,
-      "untracked": 4
+      "untracked": 5
     },
     "dirty_files": {
       ".env.bak-20260819-133612": "UNTRACKED",
+      "configs/.env.bak-20260820-134218": "UNTRACKED",
       "configs/config.yaml.bak-20260820-132111": "UNTRACKED",
       "docker-compose.override.yml": "UNTRACKED",
       "docker-compose.yml.bak-20260819-115520": "UNTRACKED"
@@ -21,7 +44,7 @@
     "files": {
       ".env": "sha256:c006357e7e2f0085453072a27d54d62612d49dc6d726a1906b5a6a07c7d0514e",
       "Dockerfile": "sha256:b3a14bd7c62b0f22098b0f4f24eb5559a4fcab224dfe25504860c5ee967a8258",
-      "configs/.env": "sha256:a01ac96ed6885b977ced8a567b70b63b8ba4e376f443b7b739e9385114501750",
+      "configs/.env": "sha256:2b06ad6f0aad04c5ae59efb6b7c75c8145f0e43d852fa6c6fa4deca878390e4f",
       "configs/config.yaml": "sha256:e39218aae355a80c2dab045c93171a62a6f1b8653d0b86c48a57406d8a2853f6",
       "docker-compose.yml": "sha256:36047231c649fd710b1fe714672affe4660040cccb5eee7a0623d24fdd349225"
     },
@@ -132,7 +155,7 @@
       },
       "env.APP_ENV": {
         "c": "plain",
-        "v": "development"
+        "v": "production"
       },
       "env.ENABLE_OPENAPI": {
         "c": "plain",
@@ -368,51 +391,66 @@
       "since": "2026-08-20"
     },
     {
-      "path": "code.dirty_counts.untracked",
-      "mode": "pin",
-      "dev": 0,
-      "prod": 4,
-      "reason": "운영에만 있는 미추적 파일 4건: docker-compose.override.yml(/data/models 마운트), configs/config.yaml 백업 2건, .env 백업 1건. 개수가 늘면 누군가 파일을 더 올린 것이다.",
-      "since": "2026-08-20"
-    },
-    {
-      "path": "containers.kmu-ai-api.image_id",
       "mode": "ignore",
+      "path": "containers.kmu-ai-api.image_id",
       "reason": "이미지 ID 는 적재하는 도커 데몬이 config 를 재정규화하면 바뀐다(로컬 26.0.0 -> 운영 29.7.2 에서 실측 확인). 같은 산출물인지는 OCI 라벨의 revision 으로 본다.",
       "since": "2026-08-20"
     },
     {
-      "path": "images.jdone/kmu-ai-api:latest.id",
       "mode": "ignore",
+      "path": "images.jdone/kmu-ai-api:latest.id",
       "reason": "위와 같음. 호스트 안에서 containers 쪽 ID 와 비교할 때만 의미가 있다.",
       "since": "2026-08-20"
     },
     {
-      "path": "containers.kmu-ai-api.labels.org.opencontainers.image.revision",
-      "mode": "pin",
       "dev": "(없음)",
+      "mode": "pin",
+      "path": "containers.kmu-ai-api.labels.org.opencontainers.image.revision",
       "prod": "a35b8f63b9df934acecf545e65251465191e16b4",
       "reason": "운영 이미지는 배포 절차대로 OCI 라벨을 굽고 빌드한다. 개발은 compose 가 라벨 없이 빌드해서 비어 있다. prod 쪽 값이 배포된 산출물의 신원이다. 이 값이 배포한 커밋과 다르면 STALE-RULE 로 뜬다.",
       "since": "2026-08-20",
       "todo": "ys 빌드에도 build.labels 를 넣어 양쪽 모두 라벨을 갖게 할 것. 그러면 이 규칙 대신 revision 직접 비교로 바꿀 수 있다."
     },
     {
-      "path": "containers.kmu-ai-api.labels.org.opencontainers.image.title",
-      "mode": "pin",
       "dev": "(없음)",
+      "mode": "pin",
+      "path": "containers.kmu-ai-api.labels.org.opencontainers.image.title",
       "prod": "kmu-ai-api",
       "reason": "운영 이미지는 배포 절차대로 OCI 라벨을 굽고 빌드한다. 개발은 compose 가 라벨 없이 빌드해서 비어 있다. prod 쪽 값이 배포된 산출물의 신원이다.",
       "since": "2026-08-20",
       "todo": "ys 빌드에도 build.labels 를 넣어 양쪽 모두 라벨을 갖게 할 것. 그러면 이 규칙 대신 revision 직접 비교로 바꿀 수 있다."
     },
     {
-      "path": "containers.kmu-ai-api.labels.org.opencontainers.image.version",
-      "mode": "pin",
       "dev": "(없음)",
+      "mode": "pin",
+      "path": "containers.kmu-ai-api.labels.org.opencontainers.image.version",
       "prod": "20260820-a35b8f6",
       "reason": "운영 이미지는 배포 절차대로 OCI 라벨을 굽고 빌드한다. 개발은 compose 가 라벨 없이 빌드해서 비어 있다. prod 쪽 값이 배포된 산출물의 신원이다.",
       "since": "2026-08-20",
       "todo": "ys 빌드에도 build.labels 를 넣어 양쪽 모두 라벨을 갖게 할 것. 그러면 이 규칙 대신 revision 직접 비교로 바꿀 수 있다."
+    },
+    {
+      "path": "config.keys.env.APP_ENV",
+      "mode": "pin",
+      "dev": "development",
+      "prod": "production",
+      "reason": "환경 표시. 원래 운영도 development 였는데 개발과 값이 같아 드리프트로 안 잡혔다(비교 도구의 사각지대). assertions 로 절대 기준을 걸어 잡아낸 뒤 바로잡았고, 이제 서로 다른 것이 정상이다.",
+      "since": "2026-08-20"
+    },
+    {
+      "path": "config.files.configs/.env",
+      "mode": "ignore",
+      "reason": "APP_ENV 가 환경마다 다르므로 파일 해시는 항상 어긋난다. 실제 비교는 config.keys.env.* 의 개별 키로 한다.",
+      "since": "2026-08-20"
+    },
+    {
+      "path": "code.dirty_counts.untracked",
+      "mode": "pin",
+      "dev": 0,
+      "prod": 5,
+      "reason": "운영에만 있는 미추적 파일: docker-compose.override.yml(/data/models 마운트)과 설정 백업들. 개수가 늘면 누군가 파일을 더 올렸거나 백업이 쌓인 것이다.",
+      "since": "2026-08-20",
+      "todo": "백업 파일이 계속 쌓이면 정리할 것"
     }
   ],
   "images": {

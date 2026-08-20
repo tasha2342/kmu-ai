@@ -112,9 +112,17 @@ COPY --from=builder-stage /build/obfuscated/ ./
 COPY pyproject.toml uv.lock* ./
 COPY scripts ./scripts
 
+# 빌드 신원. 폐쇄망에서는 이미지 ID 가 도커 버전이 다르면 보존되지 않으므로
+# (docs/deployment-and-versioning.md 참고) 이 값이 "어느 커밋이 돌고 있는가"의 근거다.
+# 라벨은 docker inspect 로만 보이지만 ENV 로 승격하면 앱이 런타임에 노출할 수 있다.
+ARG GIT_COMMIT=unknown
+ARG IMAGE_VERSION=dev
+
 # TERM 환경 변수 설정
 ENV TERM=xterm-256color \
-    PATH="/app/.venv/bin:${PATH}"
+    PATH="/app/.venv/bin:${PATH}" \
+    GIT_COMMIT=${GIT_COMMIT} \
+    IMAGE_VERSION=${IMAGE_VERSION}
 
 RUN install -m 0444 -o root -g root /dev/null /app/.jdone_guard
 

@@ -189,6 +189,26 @@ def compare(dev, prod):
     return rows, summary
 
 
+def check_assertions(env, doc):
+    """환경마다 **반드시 이래야 하는** 값을 검사한다.
+
+    두 환경을 비교하는 도구는 **둘 다 똑같이 틀렸을 때 침묵한다.** 실제로 운영이
+    APP_ENV=development 로 돌고 있었는데 개발과 값이 같아 드리프트로 잡히지 않았다.
+    비교가 아니라 절대 기준이 필요한 항목은 여기 선언한다.
+
+    Returns:
+        list: (경로, 기대값, 실제값, 사유) 위반 목록
+    """
+    flat = flatten(doc)
+    bad = []
+    for rule in (doc or {}).get("assertions", []) or []:
+        path = rule.get("path", "")
+        actual = flat.get(path, "(없음)")
+        if not _same(actual, rule.get("equals")):
+            bad.append((path, rule.get("equals"), actual, rule.get("reason", "")))
+    return bad
+
+
 def _same(actual, declared):
     if isinstance(declared, (dict, list)):
         declared = json.dumps(declared, sort_keys=True, ensure_ascii=True)
@@ -243,8 +263,17 @@ def cmd_report(args):
     rows, summary = compare(dev, prod)
     drift = [r for r in rows if r[0] == "DRIFT"]
     stale = [r for r in rows if r[0] == "STALE-RULE"]
+    violations = [(e, v) for e, d in (("dev", dev), ("prod", prod))
+                  for v in check_assertions(e, d)]
 
-    if not drift and not stale:
+    for envname, (path, want, actual, reason) in violations:
+        out("%s[version]%s %s위반%s %s.%s — %s 여야 하는데 %s"
+            % (C["dim"], C["off"], C["red"], C["off"], envname, path,
+               _short(want, 40), _short(actual, 40)))
+        if reason and not args.brief:
+            out("      %s%s%s" % (C["dim"], reason, C["off"]))
+
+    if not drift and not stale and not violations:
         out("%s[version]%s %s일치%s — 선언된 차이 %d건은 억제됨"
             % (C["dim"], C["off"], C["green"], C["off"], summary["EXPECTED"]))
     else:
@@ -274,7 +303,7 @@ def cmd_report(args):
         out("%s[version]%s 자세히: /version-check" % (C["dim"], C["off"]))
 
     if args.strict:
-        if stale:
+        if violations or stale:
             return 2
         if drift:
             return 1
@@ -333,10 +362,11 @@ def cmd_record(args):
         out("환경이 다릅니다: 파일은 %s, 요청은 %s" % (doc.get("env"), args.env))
         return 2
 
-    # 기존 expected_diff 는 보존한다. 수집기는 이 값을 모른다.
+    # 사람이 선언한 값은 보존한다. 수집기는 이들을 모른다.
     old = load_state(args.env) or {}
-    if old.get("expected_diff"):
-        doc["expected_diff"] = old["expected_diff"]
+    for key in ("expected_diff", "assertions"):
+        if old.get(key):
+            doc[key] = old[key]
 
     text = json.dumps(doc, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
     hits = audit_text(text)

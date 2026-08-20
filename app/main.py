@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from fastapi.openapi.utils import get_openapi
 
-from app.config import env, fastapi_config, project_name
+from app.config import env, fastapi_config, project_name, project_version
 from app.api.v1 import api_v1_router
 from app.scheduler.service import scheduler_service
 from app.models.database import database_proxy
@@ -184,7 +184,25 @@ app.include_router(api_v1_router, prefix="/v1")
 
 @app.get("/health", include_in_schema=False)
 async def health():
-    return {"status": "ok"}
+    """상태와 함께 **어느 빌드가 돌고 있는지**를 돌려줍니다.
+
+    폐쇄망에서는 이미지 태그가 전부 `:latest` 라 밖에서 버전을 알 수 없었고, 확인하려면
+    컨테이너에 들어가야 했습니다. 이미지 ID 도 적재하는 도커 버전이 다르면 보존되지
+    않습니다. (docs/deployment-and-versioning.md 참고)
+
+    `GIT_COMMIT`/`IMAGE_VERSION` 은 Dockerfile 의 ARG 를 ENV 로 승격한 값이라,
+    HTTP 한 번으로 신원을 확인할 수 있습니다. 빌드 인자 없이 만든 이미지는 `unknown` 입니다.
+
+    `include_in_schema=False` 라 공개 스키마는 바뀌지 않습니다.
+    """
+
+    return {
+        "status": "ok",
+        "version": project_version,
+        "commit": os.getenv("GIT_COMMIT", "unknown"),
+        "image_version": os.getenv("IMAGE_VERSION", "unknown"),
+        "app_env": env.APP_ENV,
+    }
 
 #endregion
 

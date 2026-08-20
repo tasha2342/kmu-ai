@@ -348,5 +348,17 @@
   "runtime": {
     "status": "ok"
   },
-  "schema": 1
+  "schema": 1,
+  "assertions": [
+    {
+      "path": "config.keys.env.APP_ENV.v",
+      "equals": "development",
+      "reason": "개발 서버는 development 가 맞다. 운영과 대칭으로 못 박아 두면 두 파일이 뒤바뀌는 사고도 잡힌다."
+    },
+    {
+      "path": "config.keys.chatbot.embedding_dim.v",
+      "equals": 1024,
+      "reason": "운영과 같은 이유. 차원이 어긋나면 색인이 통째로 깨진다."
+    }
+  ]
 }
