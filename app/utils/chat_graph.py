@@ -1,4 +1,5 @@
 import litellm
+import re
 
 from dataclasses import dataclass
 
@@ -193,6 +194,66 @@ CONDENSE_SYSTEM_PROMPT = (
 지식베이스 검색 전에 질문을 독립적인 형태로 복원해야 근거를 찾을 수 있습니다.
 """
 
+CONDENSE_ANAPHORA_KO = (
+    "그거", "그것", "그건", "그걸", "그런", "그중", "그 중", "그때", "그 때",
+    "그럼", "그러면", "그리고", "그다음", "그 다음", "거기", "저거", "저것",
+    "이거", "이것", "이건", "위에서", "앞에서", "방금", "아까", "해당", "말한",
+)
+"""한국어 지시어·접속 표현. 하나라도 있으면 앞 대화에 기대는 발화로 본다."""
+
+CONDENSE_ANAPHORA_EN = (
+    "it", "its", "that", "this", "these", "those", "there", "then", "they",
+    "them", "he", "she", "same", "above", "previous", "instead",
+    "what about", "how about", "and the", "what if",
+)
+"""영어 지시어. 한국어와 달리 부분 문자열로 찾으면 안 된다 ("credit" 안의 "it").
+단어 경계로 찾는다.
+
+"what about"처럼 두 단어짜리도 넣는다. "about" 하나만으로는 자기완결적인 발화
+("Tell me about scholarships")까지 걸려 프리필터가 무의미해진다."""
+
+CONDENSE_ELLIPSIS_MAX_CHARS = 15
+"""이 길이 이하의 발화는 지시어가 없어도 재작성 대상으로 본다.
+
+"기간은 얼마나 되나요?"(12자)처럼 주어가 통째로 생략된 후속 질문이 여기 걸린다.
+짧은데 자기완결적인 질문("장학금 종류?")까지 함께 걸리지만, 놓치는 쪽보다 낫다.
+"""
+
+_CONDENSE_EN_PATTERN = re.compile(
+    r"\b(?:%s)\b" % "|".join(CONDENSE_ANAPHORA_EN), re.IGNORECASE
+)
+
+
+def _needs_condense(query: str) -> bool:
+    """이 발화가 앞 대화에 기대고 있는가를 LLM 없이 판정합니다.
+
+    재작성은 지시어를 실제 대상으로 바꾸는 작업이라, **지시어가 없으면 할 일이 없습니다.**
+    그런데 판정을 LLM에 맡기면 (재작성기 프롬프트의 "이미 완결된 질문이면 원문을 그대로")
+    할 일이 없다는 것을 알아내는 데도 왕복이 한 번 듭니다. gemma-4-31b-it은 thinking을
+    끌 수 없어 그 왕복이 사고 토큰을 먼저 소비하고, 그동안 사용자 화면에는 아무것도
+    뜨지 않습니다. (실측: 운영에서 `chatbot_condense` p50 227ms)
+
+    그래서 **명백히 자기완결적인 발화는 호출 전에 걸러냅니다.** 지시어가 있거나 아주 짧으면
+    호출하고, 아니면 건너뜁니다. 걸러내는 쪽으로 틀리면 맥락 복원을 놓치므로(KAI-REQ-015)
+    판정은 보수적으로 합니다 — 애매하면 호출합니다.
+
+    Args:
+        query (str): 사용자 발화
+
+    Returns:
+        bool: 재작성 호출이 필요하면 True
+    """
+
+    text = (query or "").strip()
+    if not text:
+        return False
+    if len(text) <= CONDENSE_ELLIPSIS_MAX_CHARS:
+        return True
+    if any(marker in text for marker in CONDENSE_ANAPHORA_KO):
+        return True
+    return bool(_CONDENSE_EN_PATTERN.search(text))
+
+
 def _shot(query: str, intent: ChatIntent, language: Language) -> tuple[str, str]:
     """Few-shot 예시 한 쌍을 `발화 -> "의도|언어"` 형태로 만듭니다."""
 
@@ -249,6 +310,13 @@ class ChatGraphState(TypedDict, total=False):
     """
     query_condensed: bool
     """후속 질문 재작성이 실제로 일어났는지 여부 (검색 로그·디버깅용)"""
+    condense_skipped: bool
+    """재작성 LLM 호출을 프리필터로 건너뛰었는지 여부
+
+    `query_condensed=False`는 "재작성이 일어나지 않았다"만 말하고, 호출을 하고 실패한
+    것인지 아예 호출을 안 한 것인지는 구분하지 못합니다. 프리필터가 얼마나 걸러내는지
+    보려면 그 구분이 필요합니다.
+    """
     session_id: str
     """세션 ID"""
     message_id: str
@@ -1016,6 +1084,12 @@ async def condense_query(state: ChatGraphState, config: Optional[RunnableConfig]
     if not recent:
         return {"search_query": query, "query_condensed": False}
 
+    # 지시어 없는 자기완결적 발화는 재작성할 것이 없으므로 LLM을 호출하지 않습니다.
+    # 호출해도 원문이 그대로 돌아오는데, 그 확인에만 왕복이 한 번 듭니다.
+    if not _needs_condense(query):
+        _log(deps).debug(f"자기완결적 발화라 재작성을 건너뜁니다. ({query!r})")
+        return {"search_query": query, "query_condensed": False, "condense_skipped": True}
+
     # 재작성은 지시어를 실제 대상으로 바꾸는 작업이라 발화의 앞부분만 있으면 충분합니다.
     # 이력서 전문처럼 긴 발화를 그대로 넣으면 컨텍스트 상한을 넘겨 호출 자체가 실패합니다.
     messages: list[dict] = [{"role": "system", "content": CONDENSE_SYSTEM_PROMPT}]
@@ -1546,6 +1620,7 @@ async def run_chat_graph(
         # condense_query가 대화 맥락을 반영해 덮어씁니다. (첫 턴이면 원문 그대로)
         "search_query": query,
         "query_condensed": False,
+        "condense_skipped": False,
         "session_id": session_id,
         "message_id": message_id,
         # 자동이면 일단 서비스 기본값으로 두고 classify_intent가 감지 결과로 덮어씁니다.

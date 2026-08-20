@@ -42,6 +42,20 @@ import time
 import urllib.error
 import urllib.request
 
+FOLLOW_UPS = [
+    "그럼 기간은 얼마나 되나요?",
+    "그거 어디에 신청해요?",
+    "그중에 제일 빠른 건 뭐야?",
+    "거기 연락처는?",
+    "그때는 어떻게 해야 해?",
+]
+"""다중 턴(`--turns`) 2턴부터 쓰는 후속 질문.
+
+전부 지시어("그럼", "그거", "그중", "거기", "그때")를 포함한다. 앞 대화 없이는
+의미가 통하지 않는 발화라야 `condense_query` 가 실제로 도는 경로를 재게 된다.
+자기완결적인 질문을 넣으면 프리필터가 걸러 버려 비교 자체가 성립하지 않는다.
+"""
+
 DEFAULT_PROMPTS = [
     "정관 시행세칙 제1조의 목적을 설명해줘.",
     "학칙에서 휴학과 복학 절차를 정리해줘.",
@@ -89,7 +103,7 @@ def find_vllm():
 
 
 class Result(object):
-    __slots__ = ("ok", "ttft", "total", "out_tokens", "error")
+    __slots__ = ("ok", "ttft", "total", "out_tokens", "error", "session_id", "turn")
 
     def __init__(self):
         self.ok = False
@@ -97,6 +111,10 @@ class Result(object):
         self.total = None
         self.out_tokens = 0
         self.error = None
+        self.session_id = None
+        """챗봇이 SSE `session` 이벤트로 돌려주는 세션 ID. 다중 턴에 이어 쓴다."""
+        self.turn = 1
+        """이 요청이 대화의 몇 번째 턴인가. 1턴에는 이력이 없어 재작성이 돌지 않는다."""
 
 
 def stream_request(url, payload, headers, timeout=300):
@@ -132,6 +150,9 @@ def stream_request(url, payload, headers, timeout=300):
                 obj = json.loads(data)
             except ValueError:
                 continue
+            # 챗봇은 본문 델타보다 먼저 session 이벤트로 세션/메시지 ID 를 보낸다.
+            if res.session_id is None and isinstance(obj, dict) and obj.get("session_id"):
+                res.session_id = obj["session_id"]
             # vLLM: choices[0].delta.content / 챗봇: {"content": "..."}
             piece = ""
             if "choices" in obj:
@@ -165,15 +186,31 @@ def pct(values, p):
     return s[k]
 
 
-def run_wave(make_request, concurrency, requests_per_worker):
-    """동시에 N개를 띄워 한 파동을 돌린다."""
+def run_wave(make_request, concurrency, requests_per_worker, turns=1):
+    """동시에 N개를 띄워 한 파동을 돌린다.
+
+    `turns` 가 1보다 크면 각 워커가 **한 세션을 이어가며** 여러 턴을 주고받는다.
+    1턴에는 대화 이력이 없어 `condense_query` 가 아예 돌지 않으므로, 재작성 경로를
+    재려면 반드시 2턴 이상이 필요하다.
+    """
     results = []
     lock = threading.Lock()
 
     def worker(idx):
         local = []
         for r in range(requests_per_worker):
-            local.append(make_request(idx * requests_per_worker + r))
+            session = None
+            for t in range(turns):
+                res = make_request(idx * requests_per_worker + r, session, t + 1)
+                res.turn = t + 1
+                local.append(res)
+                if res.session_id:
+                    session = res.session_id
+                elif turns > 1:
+                    # 세션 ID 를 못 받으면 다음 턴은 새 대화가 되어 측정이 무의미해진다.
+                    res.error = res.error or "session_id 미수신"
+                    res.ok = False
+                    break
         with lock:
             results.extend(local)
 
@@ -229,6 +266,9 @@ def main():
     ap.add_argument("--base-url", default=None, help="직접 지정 (기본: docker 로 자동 탐색)")
     ap.add_argument("--out", default=None)
     ap.add_argument("--warmup", type=int, default=1, help="측정 전 버리는 요청 수")
+    ap.add_argument("--turns", type=int, default=1,
+                    help="한 세션에서 주고받을 턴 수 (chatbot 전용). "
+                         "2 이상이어야 후속 질문 재작성 경로를 잰다")
     args = ap.parse_args()
 
     if args.mode == "vllm":
@@ -243,7 +283,7 @@ def main():
         url = base + "/v1/chat/completions"
         headers = {}
 
-        def make_request(i):
+        def make_request(i, session_id=None, turn=1):
             prompt = DEFAULT_PROMPTS[i % len(DEFAULT_PROMPTS)]
             return stream_request(url, {
                 "model": args.model,
@@ -271,9 +311,16 @@ def main():
         url = base + "/v1/chatbot/message"
         headers = {"Authorization": "Bearer " + token}
 
-        def make_request(i):
-            prompt = DEFAULT_PROMPTS[i % len(DEFAULT_PROMPTS)]
-            return stream_request(url, {"message": prompt, "stream": True}, headers)
+        def make_request(i, session_id=None, turn=1):
+            if turn == 1:
+                prompt = DEFAULT_PROMPTS[i % len(DEFAULT_PROMPTS)]
+            else:
+                # 2턴부터는 지시어가 든 후속 질문. 재작성 경로를 실제로 태우기 위함이다.
+                prompt = FOLLOW_UPS[(i + turn) % len(FOLLOW_UPS)]
+            payload = {"message": prompt, "stream": True}
+            if session_id:
+                payload["session_id"] = session_id
+            return stream_request(url, payload, headers)
 
     sys.stdout.write("mode=%s url=%s max_tokens=%d\n" % (args.mode, url, args.max_tokens))
 
@@ -281,7 +328,7 @@ def main():
         sys.stdout.write("warmup %d건... " % args.warmup)
         sys.stdout.flush()
         for i in range(args.warmup):
-            make_request(i)
+            make_request(i, None, 1)
         sys.stdout.write("done\n")
 
     levels = [args.concurrency] if args.concurrency else [1, 2, 4, 8, 16]
@@ -289,14 +336,26 @@ def main():
     for c in levels:
         sys.stdout.write("concurrency=%-3d ... " % c)
         sys.stdout.flush()
-        results, wall = run_wave(make_request, c, args.requests_per_worker)
+        results, wall = run_wave(make_request, c, args.requests_per_worker, args.turns)
         row = summarize(results, wall, c)
+        # 턴별로도 쪼갠다. condense_query 는 2턴부터만 도는 경로라, 전체 평균에
+        # 1턴을 섞으면 그 비용이 희석되어 개선이 보이지 않는다.
+        if args.turns > 1:
+            row["by_turn"] = {}
+            for t in range(1, args.turns + 1):
+                sub = [r for r in results if r.turn == t]
+                if sub:
+                    row["by_turn"][str(t)] = summarize(sub, wall, c)
         rows.append(row)
         if row.get("ok"):
             sys.stdout.write(
                 "TTFT p50=%.2fs p90=%.2fs | req %.1f tok/s | total %.1f tok/s | fail %d\n"
                 % (row["ttft_p50"], row["ttft_p90"], row["per_req_tokens_per_s"],
                    row["total_tokens_per_s"], row["failed"]))
+            for t, sub in sorted((row.get("by_turn") or {}).items()):
+                if sub.get("ok"):
+                    sys.stdout.write("    %s턴: TTFT p50=%.2fs p90=%.2fs (n=%d)\n"
+                                     % (t, sub["ttft_p50"], sub["ttft_p90"], sub["ok"]))
         else:
             sys.stdout.write("전부 실패: %s\n" % row.get("error_sample"))
 
@@ -313,7 +372,8 @@ def main():
     if args.out:
         with open(args.out, "w", encoding="ascii") as fp:
             json.dump({"mode": args.mode, "url": url, "max_tokens": args.max_tokens,
-                       "rows": rows}, fp, ensure_ascii=True, indent=2)
+                       "turns": args.turns, "rows": rows}, fp,
+                      ensure_ascii=True, indent=2)
         sys.stdout.write("\n%s 에 저장했습니다.\n" % args.out)
     return 0
 
