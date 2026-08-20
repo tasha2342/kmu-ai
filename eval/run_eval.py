@@ -38,12 +38,20 @@ from eval.date_facts import DateFacts, answer_date_question, build_fact_store
 from eval.index import INDEX_ROOT
 from eval.retriever import EvalRetriever, bm25_tokens
 from eval.router import Route, route
-from eval.scoring import classify_failure, score_answer, score_retrieval
+from eval.scoring import (
+    classify_failure,
+    score_answer,
+    score_answer_v2,
+    score_retrieval,
+    score_retrieval_article,
+)
 
 
 EVAL_DIR = Path(__file__).resolve().parent
 RESULTS_DIR = EVAL_DIR / "results"
 QUESTIONS_PATH = EVAL_DIR / "questions.jsonl"
+# 학생 문항 골드셋. 기존 48문항과 별개 파일입니다 — 저쪽은 회귀 기준점이라 건드리지 않습니다.
+STUDENT_QUESTIONS_PATH = EVAL_DIR / "questions_student.jsonl"
 
 ABSTAIN_TEXT = "참조 문서의 표 셀 값이 비어 있어 알 수 없습니다."
 
@@ -470,12 +478,256 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
+# ── 학생 골드셋: 4-arm 진단 실행 ─────────────────────────────────────────────
+
+
+def run_student_experiment(
+    experiment: str,
+    index_dir: Path,
+    backend: str = "hybrid",
+    top_k: int = 12,
+    title_routing: bool = False,
+    arms: tuple[str, ...] = ("r", "e2e", "on", "oc"),
+    use_judge: bool = False,
+    recall_curve: Optional[list[int]] = None,
+    questions_path: Optional[Path] = None,
+    evidence_max_chars: int = 12000,
+    source_content_max_chars: int = 1500,
+) -> dict[str, Any]:
+    """학생 골드셋으로 4-arm 진단을 돌립니다.
+
+    `run_experiment`과 분리한 이유: 저쪽은 날짜/표 레인 로직이 얽혀 있고 48문항
+    회귀 기준점이 걸려 있습니다. 거기에 arm 분기를 끼워 넣으면 회귀 게이트가
+    자기 자신을 검증하지 못하게 됩니다.
+    """
+    from eval.arms import GENERATION_ARMS, classify, run_arms
+
+    questions = load_questions(questions_path or STUDENT_QUESTIONS_PATH)
+    retriever = EvalRetriever(index_dir, backend=backend)
+    arms = tuple(arms)
+
+    judge_fn = None
+    judge_obj = None
+    if use_judge:
+        from eval.judge import Judge
+
+        judge_obj = Judge(experiment=experiment)
+        judge_fn = judge_obj
+
+    generate_fn = None
+    evidence_fn = None
+    if any(a in GENERATION_ARMS for a in arms):
+        from eval.gemma import extract_answer_value, generate_answer
+
+        def generate_fn(question_text: str, evidence: str) -> str:  # noqa: F811
+            return extract_answer_value(generate_answer(question_text, evidence))
+
+        def evidence_fn(hits: list[dict[str, Any]]) -> str:  # noqa: F811
+            return build_evidence(hits, evidence_max_chars, source_content_max_chars)
+
+    rows: list[dict[str, Any]] = []
+    curve_hits: dict[int, list[float]] = {n: [] for n in (recall_curve or [])}
+
+    for question in questions:
+        started = time.time()
+        result = run_arms(
+            question,
+            retriever,
+            top_k=top_k,
+            arms=arms,
+            generate_fn=generate_fn,
+            evidence_fn=evidence_fn,
+            title_routing=title_routing,
+        )
+        hits = result["hits"]
+
+        article = score_retrieval_article(question, hits, top_k)
+        doc = score_retrieval(question, hits, top_k)  # 과거 리포트와 비교 가능한 축
+
+        scores: dict[str, Optional[bool]] = {}
+        predictions = result.get("predictions", {})
+        graded: dict[str, Any] = {}
+        for arm in ("e2e", "on", "oc"):
+            if arm not in predictions:
+                scores[arm] = None
+                continue
+            g = score_answer_v2(question, predictions[arm], judge_fn=judge_fn)
+            graded[arm] = g
+            scores[arm] = bool(g["correct"])
+
+        r_hit = bool(article["recall_article_at_k"]) if article["applicable"] else None
+        failure = classify(r_hit, scores.get("oc"), scores.get("on"), scores.get("e2e"))
+
+        # recall@N 곡선 — 후보 절단에 걸리지 않도록 별도 검색 (실험 S0)
+        if curve_hits:
+            deep = retriever.retrieve_ranked(
+                question["question"], max_n=max(curve_hits), title_routing=title_routing
+            )
+            for n in curve_hits:
+                s = score_retrieval_article(question, deep, n)
+                if s["applicable"]:
+                    curve_hits[n].append(s["recall_article_at_k"])
+
+        rows.append(
+            {
+                "id": question["id"],
+                "category": question.get("category"),
+                "type": question.get("type"),
+                "subtype": question.get("subtype"),
+                "doc_id": question.get("doc_id"),
+                "answer_type": question.get("answer_type"),
+                "question": question["question"],
+                "gold": question.get("answer"),
+                # 검색
+                "recall_article_at_k": article["recall_article_at_k"],
+                "mrr_article": article["mrr_article"],
+                "first_rank_article": article["first_rank_article"],
+                "article_coverage": article.get("article_coverage"),
+                "matched_articles": article["matched_articles"],
+                "retrieval_applicable": article["applicable"],
+                "recall_doc_at_k": doc["recall_at_k"],
+                "mrr_doc": doc["mrr"],
+                # 생성 arm
+                "correct": scores.get("e2e"),
+                "correct_on": scores.get("on"),
+                "correct_oc": scores.get("oc"),
+                "partial_e2e": graded.get("e2e", {}).get("partial"),
+                "judged": any(g.get("judged") for g in graded.values()),
+                "verdict": graded.get("e2e", {}).get("verdict"),
+                "prediction": (predictions.get("e2e") or "")[:300],
+                "prediction_oc": (predictions.get("oc") or "")[:300],
+                "failure": failure,
+                "latency_sec": round(time.time() - started, 4),
+                "top_hits": [
+                    {
+                        "doc_id": h.get("doc_id"),
+                        "article": h.get("article"),
+                        "section_type": h.get("section_type"),
+                        "score": round(float(h.get("score", 0.0)), 4),
+                    }
+                    for h in hits[:5]
+                ],
+            }
+        )
+
+    summary = summarize_student(rows)
+    meta = json.loads((index_dir / "meta.json").read_text(encoding="utf-8"))
+    summary.update(
+        {
+            "experiment": experiment,
+            "index": index_dir.name,
+            "backend": backend,
+            "top_k": top_k,
+            "arms": list(arms),
+            "title_routing": title_routing,
+            "judge": use_judge,
+            "questions": str((questions_path or STUDENT_QUESTIONS_PATH).name),
+            "documents": meta["documents"],
+            "chunks": meta["chunks"],
+        }
+    )
+    if judge_obj:
+        summary.update(judge_obj.summary())
+
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    with (RESULTS_DIR / f"{experiment}.jsonl").open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    (RESULTS_DIR / f"{experiment}_summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    if curve_hits:
+        from eval.stats import fmt_ci
+
+        curve = {
+            str(n): {
+                "recall_article": round(sum(v) / len(v), 4) if v else 0.0,
+                "ci": fmt_ci(int(sum(v)), len(v)),
+                "n": len(v),
+            }
+            for n, v in sorted(curve_hits.items())
+        }
+        (RESULTS_DIR / f"{experiment}_curve.json").write_text(
+            json.dumps({"experiment": experiment, "curve": curve}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        summary["recall_curve"] = curve
+
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return summary
+
+
+def summarize_student(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """헤드라인 수치는 전부 Wilson 신뢰구간을 달고 나갑니다.
+
+    TRIG-* 대조군은 헤드라인에서 제외합니다. 학생 어휘와 규정 어휘의 격차를 재려고
+    일부러 어렵게 만든 문항이라, 섞으면 시스템 성능을 과소평가하게 됩니다.
+    """
+    from eval.stats import fmt_ci
+
+    scored = [r for r in rows if r.get("category") != "TRIG"]
+    trig = [r for r in rows if r.get("category") == "TRIG"]
+
+    def _binary(group: list[dict[str, Any]], key: str) -> dict[str, Any]:
+        vals = [r[key] for r in group if r.get(key) is not None]
+        if not vals:
+            return {"rate": None, "n": 0}
+        hits = sum(1 for v in vals if v)
+        return {"rate": round(hits / len(vals), 4), "hits": hits, "n": len(vals),
+                "ci": fmt_ci(hits, len(vals))}
+
+    out: dict[str, Any] = {
+        "n": len(rows),
+        "n_scored": len(scored),
+        "n_trigger_control": len(trig),
+        # 검색
+        "recall_article_at_k": _binary(scored, "recall_article_at_k"),
+        "recall_doc_at_k": _binary(scored, "recall_doc_at_k"),
+        "mrr_article": round(
+            sum(r["mrr_article"] or 0.0 for r in scored if r["retrieval_applicable"])
+            / max(1, sum(1 for r in scored if r["retrieval_applicable"])),
+            4,
+        ),
+        # 생성 arm
+        "answer_accuracy_e2e": _binary(scored, "correct"),
+        "answer_accuracy_on": _binary(scored, "correct_on"),
+        "answer_accuracy_oc": _binary(scored, "correct_oc"),
+        "trigger_control_accuracy": _binary(trig, "correct"),
+        "failure_counts": dict(Counter(r["failure"] for r in scored if r["failure"])),
+        "avg_latency_sec": round(sum(r["latency_sec"] for r in rows) / max(1, len(rows)), 4),
+        "judged_count": sum(1 for r in rows if r.get("judged")),
+    }
+
+    # 카테고리별은 백분율이 아니라 x/n 원시값으로 냅니다.
+    # 카테고리당 ~20문항이면 CI가 ±0.20이라 백분율은 노이즈에 옷을 입힌 것입니다.
+    by_cat: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        by_cat.setdefault(str(r.get("category")), []).append(r)
+    out["by_category"] = {
+        cat: {
+            "recall_article": _raw(group, "recall_article_at_k"),
+            "answer_e2e": _raw(group, "correct"),
+        }
+        for cat, group in sorted(by_cat.items())
+    }
+    return out
+
+
+def _raw(group: list[dict[str, Any]], key: str) -> str:
+    """`15/20` 형태. 카테고리별 수치를 백분율로 쓰지 않기 위한 것."""
+    vals = [r[key] for r in group if r.get(key) is not None]
+    return f"{sum(1 for v in vals if v)}/{len(vals)}" if vals else "0/0"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="규정집 RAG 실험 실행")
     parser.add_argument("--experiment", required=True)
     parser.add_argument("--index", required=True, help="eval/indexes/ 아래 인덱스 이름")
     parser.add_argument(
-        "--backend", default="lexical", choices=("lexical", "pg_simple", "dense", "hybrid")
+        "--backend", default="lexical",
+        choices=("lexical", "pg_simple", "dense", "hybrid", "pg_hybrid"),
+        help="pg_hybrid = dense 0.55 + pg_simple 0.45. 진짜 프로덕션 기준선",
     )
     parser.add_argument("--top-k", type=int, default=12)
     parser.add_argument("--date-lane", action="store_true", help="날짜 팩트 스토어로 답변")
@@ -496,7 +748,36 @@ def main() -> None:
         "--doc-resolution", default="rank", choices=("rank", "mass"),
         help="날짜 레인에서 문서를 고르는 방식",
     )
+    # ── 학생 골드셋 4-arm 경로 ───────────────────────────────────────────────
+    parser.add_argument(
+        "--questions", metavar="PATH",
+        help="골드셋 경로. 지정하면 학생 4-arm 경로로 실행합니다 "
+             "(기본은 기존 48문항 date/table 경로)",
+    )
+    parser.add_argument(
+        "--arms", default="r,e2e,on,oc",
+        help="실행할 arm. r=검색만, e2e=실제 top-k, on=골드+distractor, oc=골드만",
+    )
+    parser.add_argument("--judge", action="store_true", help="자유형 답변을 Claude로 2차 판정")
+    parser.add_argument(
+        "--recall-curve", metavar="N,N,...",
+        help="recall_article@N 곡선을 그립니다 (실험 S0). 예: 5,10,12,20,30,50,100,200",
+    )
     args = parser.parse_args()
+
+    if args.questions:
+        run_student_experiment(
+            experiment=args.experiment,
+            index_dir=INDEX_ROOT / args.index,
+            backend=args.backend,
+            top_k=args.top_k,
+            title_routing=args.title_routing,
+            arms=tuple(a.strip() for a in args.arms.split(",") if a.strip()),
+            use_judge=args.judge,
+            recall_curve=[int(n) for n in args.recall_curve.split(",")] if args.recall_curve else None,
+            questions_path=Path(args.questions),
+        )
+        return
 
     run_experiment(
         experiment=args.experiment,

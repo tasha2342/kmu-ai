@@ -61,6 +61,15 @@ def bm25_tokens(text: str) -> list[str]:
     return [t.lower() for t in BM25_TOKEN_RE.findall(text or "")]
 
 
+def _char_bigrams(text: str) -> set[str]:
+    """한글 문자 바이그램. 띄어쓰기 없는 문서 제목을 질의어와 맞추기 위한 것."""
+    out: set[str] = set()
+    for token in PG_SIMPLE_TOKEN_RE.findall(text or ""):
+        t = token.lower()
+        out.update(t[i : i + 2] for i in range(len(t) - 1))
+    return out
+
+
 def pg_simple_tokens(text: str) -> list[str]:
     return [t.lower() for t in PG_SIMPLE_TOKEN_RE.findall(text or "")]
 
@@ -94,12 +103,24 @@ class EvalRetriever:
         self._pg = _InvertedIndex([pg_simple_tokens(c.get("text", "")) for c in self.chunks])
 
         # 문서 제목 토큰 (제목 기반 라우팅용). 파일명에서 문서번호와 확장자를 뺀 부분.
+        #
+        # 주의: 청크의 파일명 키는 `source`입니다. `file_name`이 아닙니다
+        # (regulation_chunker._make_chunk 참고). 2026-08-12까지 여기서 file_name을 읽고
+        # 있었고, 그래서 _title_tokens가 전부 빈 집합 → --title-routing이 아무 일도 하지
+        # 않는 no-op이었습니다. 실험 R6의 "제목 라우팅은 효과 없음" 결론은 이 버그
+        # 때문이므로 무효이고, 제목 라우팅은 "미측정"으로 재분류해야 합니다.
+        #
+        # 두 번째 문제: 한글 파일명은 띄어쓰기가 없어서 `학교법인계명대학교정관` 하나가
+        # 통째로 토큰 1개가 됩니다. 어절 토큰 겹침으로는 절대 매칭되지 않으므로
+        # 문자 바이그램으로 겹침을 봅니다. (`장학금`↔`장학규정`은 바이그램 `장학`에서 만납니다)
         self._title_tokens: list[set[str]] = []
+        self._title_bigrams: list[set[str]] = []
         for chunk in self.chunks:
-            name = str(chunk.get("file_name") or "")
+            name = str(chunk.get("source") or chunk.get("file_name") or "")
             title = re.sub(r"^\d+-\d+-\d+", "", name)
             title = re.sub(r"\(.*?\)|\.hwp$", "", title).replace("+", " ")
             self._title_tokens.append(set(bm25_tokens(title)))
+            self._title_bigrams.append(_char_bigrams(title))
 
         self.embeddings: Optional[Any] = None
         embed_path = self.index_dir / "embeddings.npy"
@@ -196,19 +217,32 @@ class EvalRetriever:
     # ── 라우팅 가산점 ───────────────────────────────────────────────────────
 
     def _title_route_boosts(self, query: str) -> dict[int, float]:
-        """질의어와 문서 제목의 어휘 겹침으로 문서를 좁힙니다. (R6)
+        """질의어와 문서 제목의 겹침으로 문서를 좁힙니다. (R6)
 
         rag-test는 문서 9개를 제목 키워드 표에 하드코딩했습니다. 181문서에서는
-        표를 손으로 유지할 수 없으므로 제목 토큰 겹침으로 일반화합니다.
+        표를 손으로 유지할 수 없으므로 제목 겹침으로 일반화합니다.
+
+        어절 토큰 겹침을 먼저 보고, 없으면 문자 바이그램 겹침으로 내려갑니다.
+        한글 파일명에는 띄어쓰기가 없어서(`3-4-1장학규정.hwp` → `장학규정`) 어절
+        겹침만으로는 사실상 아무것도 안 맞습니다. 바이그램이 실질적인 경로입니다.
         """
 
-        query_tokens = set(bm25_tokens(query))
+        query_tokens = {t for t in bm25_tokens(query) if len(t) >= 2}
+        query_bigrams = _char_bigrams(query)
+
         boosts: dict[int, float] = {}
         for i, title in enumerate(self._title_tokens):
-            overlap = len(query_tokens & title)
-            if overlap >= 2:
+            if query_tokens & title:
                 boosts[i] = TITLE_ROUTE_STRONG
-            elif overlap == 1:
+                continue
+            # 바이그램 겹침 비율. 제목이 짧아 분모를 제목 쪽으로 잡습니다.
+            title_bigrams = self._title_bigrams[i]
+            if not title_bigrams:
+                continue
+            ratio = len(query_bigrams & title_bigrams) / len(title_bigrams)
+            if ratio >= 0.30:
+                boosts[i] = TITLE_ROUTE_STRONG
+            elif ratio >= 0.15:
                 boosts[i] = TITLE_ROUTE_WEAK
         return boosts
 
@@ -232,14 +266,16 @@ class EvalRetriever:
             raw = self._dense_scores(query)
         elif self.backend == "hybrid":
             raw = self._hybrid_scores(query, top_k)
+        elif self.backend == "pg_hybrid":
+            raw = self._hybrid_scores(query, top_k, lexical="pg_simple")
         else:
             raise ValueError(f"알 수 없는 백엔드: {self.backend}")
 
         if not raw:
             return []
 
-        # 정규화 후 가산점. hybrid는 이미 정규화·가산점이 들어간 점수입니다.
-        if self.backend != "hybrid":
+        # 정규화 후 가산점. hybrid 계열은 이미 정규화·가산점이 들어간 점수입니다.
+        if self.backend not in ("hybrid", "pg_hybrid"):
             highest = max(raw.values()) or 1.0
             scores = {i: v / highest for i, v in raw.items()}
             scores = self._apply_signal_boosts(query, scores)
@@ -281,12 +317,21 @@ class EvalRetriever:
             return scores
         return {i: s + compute_boost(self.chunks[i], signals) for i, s in scores.items()}
 
-    def _hybrid_scores(self, query: str, top_k: int) -> dict[int, float]:
+    def _hybrid_scores(
+        self, query: str, top_k: int, lexical: str = "bm25"
+    ) -> dict[int, float]:
         """프로덕션 융합식으로 dense와 어휘 점수를 합칩니다.
 
         후보를 `top_k * CANDIDATE_MULTIPLIER` 로 자른 뒤 융합하는 것까지 프로덕션과 같게
         맞춥니다. min-max 정규화는 후보군 크기에 민감해서(각 후보군의 최하위가 정확히 0이 됨)
         전체 청크를 후보로 넣으면 프로덕션과 다른 순위가 나옵니다.
+
+        Args:
+            lexical: `bm25`는 한국어 토크나이저 BM25(=하네스가 튜닝한 구성),
+                `pg_simple`은 프로덕션이 실제로 도는 `to_tsvector('simple')` 근사입니다.
+                후자가 `pg_hybrid` 백엔드이며 **진짜 프로덕션 기준선**입니다.
+                프로덕션 어휘 검색은 Recall@12가 0.021이라 사실상 dense 단독으로
+                도는 것과 같은데, 그 사실이 수치로 드러나야 합니다.
         """
 
         from app.utils.vector_store import (
@@ -296,18 +341,20 @@ class EvalRetriever:
             parse_query_signals,
         )
 
+        lexical_fn = self._pg_simple_scores if lexical == "pg_simple" else self._bm25_scores
+
         candidate_limit = max(1, top_k * CANDIDATE_MULTIPLIER)
         dense = self._top_n(self._dense_scores(query), candidate_limit)
-        lexical = self._top_n(self._bm25_scores(query), candidate_limit)
+        lexical_scores = self._top_n(lexical_fn(query), candidate_limit)
 
         # fuse_hybrid_scores는 id 문자열 키를 받습니다. 인덱스를 문자열로 씁니다.
         dense_map = {str(i): v for i, v in dense.items()}
-        lexical_map = {str(i): v for i, v in lexical.items()}
+        lexical_map = {str(i): v for i, v in lexical_scores.items()}
 
         signals = parse_query_signals(query)
         boosts = {
             str(i): compute_boost(self.chunks[i], signals)
-            for i in set(dense) | set(lexical)
+            for i in set(dense) | set(lexical_scores)
         }
 
         fused = fuse_hybrid_scores(
@@ -323,3 +370,34 @@ class EvalRetriever:
         if len(scores) <= n:
             return scores
         return dict(sorted(scores.items(), key=lambda kv: -kv[1])[:n])
+
+    # ── 검색 천장 측정 ───────────────────────────────────────────────────────
+
+    def retrieve_ranked(
+        self,
+        query: str,
+        max_n: int,
+        route: Optional[Route] = None,
+        title_routing: bool = False,
+        section_filter: Optional[dict[str, str]] = None,
+    ) -> list[dict[str, Any]]:
+        """상위 max_n개를 돌려줍니다. recall@N 곡선(실험 S0)을 그리기 위한 것.
+
+        **후보 절단에 주의해야 합니다.** hybrid 계열은 후보를
+        `top_k * CANDIDATE_MULTIPLIER(=4)`로 자른 뒤 융합합니다. top_k를 그대로 두고
+        N만 키우면 후보가 4*top_k에서 막혀 recall@200이 recall@48에서 평평해지는데,
+        이건 검색의 천장이 아니라 절단의 흔적입니다. 그래서 top_k에 max_n을 넘겨
+        후보 상한이 max_n*4가 되게 합니다.
+
+        이 곡선 하나가 전략을 가릅니다:
+          - recall_article@200 >= 0.95 → 순위 문제. 크로스인코더 리랭커가 답이고 통합니다.
+          - recall_article@200 <  0.95 → 후보 생성/표현 문제. 리랭커는 recall@100이
+            상한이라 도달 불가이고, 질의 확장·문서 라우팅 같은 색인/질의 쪽 작업이 필요합니다.
+        """
+        return self.retrieve(
+            query,
+            top_k=max_n,
+            route=route,
+            title_routing=title_routing,
+            section_filter=section_filter,
+        )

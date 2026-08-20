@@ -350,3 +350,31 @@ python -m eval.report --subtypes
 | `eval/gemma.py` | Gemma-4-31B 생성 / 비전 표 독해 |
 | `eval/gold_delta.md` | 골드셋 재검증 (37 본문 / 10 표 필요 / 1 기권) |
 | `eval/results/` | 실험 26종 원시 로그 + 요약 + `comparison.json` |
+
+### 후속 — 학생 문항 평가 (2026-08-12)
+
+이 리포트의 48문항은 전부 `1-0-x` 법인 규정 8문서를 대상으로 하고, 전부 날짜/표 추출입니다.
+학생이 실제로 묻는 것(휴학·졸업학점·장학금·기숙사)은 한 문항도 포함돼 있지 않습니다.
+그 공백을 메우는 별도 골드셋과 진단 하네스를 붙였습니다.
+
+| 경로 | 내용 |
+| --- | --- |
+| [`docs/kmu_ai_chatbot_test_questions.md`](kmu_ai_chatbot_test_questions.md) | 학생 문항 220개 (사람이 읽는 판본) + 수정 방안 |
+| `eval/questions_student.jsonl` | 같은 문항의 기계 채점용 골드 (21필드) |
+| `eval/schema.py` | 골드 스키마 + 검증 (조항 실재 확인 포함) |
+| `eval/gold_builder.py` | 조문에서 골드 스켈레톤 생성 (근거 구절 자동 추출) |
+| `eval/arms.py` | 4-arm 진단 — 검색/선택/독해 손실 분리 |
+| `eval/judge.py` | Claude LLM-judge (캐시 + 감사 로그 + κ 보정) |
+| `eval/diagnose.py` | 단계별 손실 분해 + 실패 분류 리포트 |
+| `eval/stats.py` | Wilson CI · McNemar 정확검정 |
+
+**이 리포트의 수치를 읽을 때 알아야 할 두 가지:**
+
+1. **`Recall@12`는 문서 단위입니다.** top-k에 `doc_id`가 맞고 키워드가 하나라도 든 청크가
+   있으면 만점입니다. 법인 8문서(1-0-1 = 44청크)에서는 타당했지만 학칙 `2-0-1`은 단일
+   문서 239청크라 학생 문항에서는 부풀려집니다. 후속 골드셋은 조항 단위로 잽니다.
+2. **§11의 개선안 중 `--title-routing`(R6)은 무효입니다.** `eval/retriever.py`가 청크의
+   파일명을 `file_name` 키로 읽고 있었는데 실제 키는 `source`라 `_title_tokens`가 전부
+   빈 집합이었습니다. R6의 "효과 없음"은 기능이 돌지 않은 결과이므로 **미측정**으로
+   재분류합니다. `title_routing=True`로 기록된 실험 17종의 그 플래그도 무의미했습니다
+   (검색 결과에 영향이 없었으므로 다른 수치는 유효합니다).
