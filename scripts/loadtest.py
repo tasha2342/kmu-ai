@@ -266,6 +266,10 @@ def main():
     ap.add_argument("--base-url", default=None, help="직접 지정 (기본: docker 로 자동 탐색)")
     ap.add_argument("--out", default=None)
     ap.add_argument("--warmup", type=int, default=1, help="측정 전 버리는 요청 수")
+    ap.add_argument("--followup", choices=["anaphora", "standalone"], default="anaphora",
+                    help="2턴 이후 질문의 성격. anaphora=지시어 있음(재작성 호출됨), "
+                         "standalone=자기완결(프리필터가 걸러냄). 프리필터 효과는 "
+                         "standalone 에서만 나타난다")
     ap.add_argument("--turns", type=int, default=1,
                     help="한 세션에서 주고받을 턴 수 (chatbot 전용). "
                          "2 이상이어야 후속 질문 재작성 경로를 잰다")
@@ -314,9 +318,13 @@ def main():
         def make_request(i, session_id=None, turn=1):
             if turn == 1:
                 prompt = DEFAULT_PROMPTS[i % len(DEFAULT_PROMPTS)]
-            else:
-                # 2턴부터는 지시어가 든 후속 질문. 재작성 경로를 실제로 태우기 위함이다.
+            elif args.followup == "anaphora":
+                # 지시어가 든 후속 질문. 프리필터가 통과시켜 재작성이 실제로 돈다.
                 prompt = FOLLOW_UPS[(i + turn) % len(FOLLOW_UPS)]
+            else:
+                # 자기완결적인 새 질문. 대화는 이어지지만 재작성할 것이 없다.
+                # 프리필터가 걸러내는 경로이고, 실사용에서 더 흔하다.
+                prompt = DEFAULT_PROMPTS[(i + turn) % len(DEFAULT_PROMPTS)]
             payload = {"message": prompt, "stream": True}
             if session_id:
                 payload["session_id"] = session_id
@@ -372,7 +380,7 @@ def main():
     if args.out:
         with open(args.out, "w", encoding="ascii") as fp:
             json.dump({"mode": args.mode, "url": url, "max_tokens": args.max_tokens,
-                       "turns": args.turns, "rows": rows}, fp,
+                       "turns": args.turns, "followup": args.followup, "rows": rows}, fp,
                       ensure_ascii=True, indent=2)
         sys.stdout.write("\n%s 에 저장했습니다.\n" % args.out)
     return 0

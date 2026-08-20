@@ -162,6 +162,38 @@ ops/local.env             접속 자격증명. 커밋 안 됨 (.git/info/exclude
 `resources`·`logs` 뿐이라, 코드 한 줄을 바꿔도 이미지를 다시 만들어야 한다.
 그래서 **특정 커밋만 골라 배포할 수 없다** — 이미지는 그 시점 브랜치 전체를 담는다.
 
+### 운영도 버전 태그로 배포한다 (2026-08-20)
+
+운영 리포가 `a35b8f6` 에 멈춰 있어 `docker-compose.yml` 4행이
+`image: jdone/kmu-ai-api:latest` 로 박혀 있었다. `.env` 의 `KMU_AI_VERSION` 을 바꿔도
+compose 가 읽지 않아 **버전 태그 체계가 운영에는 적용되지 않고 있었다.**
+
+git bundle 로 리포를 `9995b1f` 까지 올려 해결했다. 이제 compose 가
+`image: ${KMU_AI_IMAGE:-jdone/kmu-ai-api}:${KMU_AI_VERSION:-latest}` 를 쓴다.
+
+```bash
+# 중계 PC
+git bundle create kmu-ai-<from>-to-<to>.bundle <from>..main
+# 운영
+git fetch <bundle> main:refs/remotes/bundle/main
+git merge --ff-only refs/remotes/bundle/main   # 미추적 override 는 보존된다
+sed -i 's/^KMU_AI_VERSION=.*/KMU_AI_VERSION=<버전>/' .env
+docker compose up -d --force-recreate kmu-ai-api
+```
+
+**`:latest` 태그는 지웠다.** 남겨 두면 compose 변수를 잘못 넣었을 때 조용히 그쪽으로
+떨어져, 어느 빌드가 도는지 다시 알 수 없게 된다. 실패해야 할 때 실패하게 둔다.
+
+확인은 `/health` 로 한다. 컨테이너가 무엇을 쓰는지는 `docker inspect` 로 본다.
+
+```bash
+curl -s localhost:8003/health          # commit / image_version
+docker inspect kmu-ai-api --format '{{.Config.Image}}'
+```
+
+> 운영 API 의 호스트 포트는 **8003** 이다 (컨테이너 13000). 배포 스크립트를 쓸 때
+> 13000 으로 치면 응답이 없어 죽은 것처럼 보인다.
+
 ### 신원은 이미지 ID 가 아니라 **OCI 라벨**로 본다
 
 원래 이미지 ID 로 비교하려 했으나, 실측 결과 **도커 버전이 다르면 보존되지 않는다.**
