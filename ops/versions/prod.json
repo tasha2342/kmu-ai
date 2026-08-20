@@ -19,13 +19,18 @@
       "equals": "running",
       "path": "db.models.kmu-chat-gpu.status",
       "reason": "응답 생성 모델. 멈추면 모든 질문이 미응답으로 떨어진다."
+    },
+    {
+      "not_equals": "jdone/kmu-ai-api:latest",
+      "path": "containers.kmu-ai-api.image_ref",
+      "reason": "운영이 :latest 로 되돌아가면 어느 빌드가 도는지 다시 알 수 없어진다. 2026-08-20 이전이 실제로 그 상태였다. 운영 리포가 옛 커밋에 멈춰 compose 4행이 :latest 로 박혀 있었고, .env 의 KMU_AI_VERSION 이 읽히지 않았다."
     }
   ],
-  "captured_at": "2026-08-20T13:43:21+09:00",
+  "captured_at": "2026-08-20T16:16:04+09:00",
   "code": {
     "branch": "main",
-    "commit": "a35b8f63b9df934acecf545e65251465191e16b4",
-    "commit_short": "a35b8f6",
+    "commit": "e418552a339d017133c9cbe71d3a20137c11af9f",
+    "commit_short": "e418552",
     "dirty": true,
     "dirty_counts": {
       "modified": 0,
@@ -42,11 +47,11 @@
   },
   "config": {
     "files": {
-      ".env": "sha256:c006357e7e2f0085453072a27d54d62612d49dc6d726a1906b5a6a07c7d0514e",
-      "Dockerfile": "sha256:b3a14bd7c62b0f22098b0f4f24eb5559a4fcab224dfe25504860c5ee967a8258",
+      ".env": "sha256:a5d2e74fa1a0ca8340756934f3dc6bd88fce80f8358f288e528e28396da53780",
+      "Dockerfile": "sha256:b1443d6d323c0fe2fe7a04df871db294decdbe7209cb9607d4090503ffffe4bb",
       "configs/.env": "sha256:2b06ad6f0aad04c5ae59efb6b7c75c8145f0e43d852fa6c6fa4deca878390e4f",
       "configs/config.yaml": "sha256:e39218aae355a80c2dab045c93171a62a6f1b8653d0b86c48a57406d8a2853f6",
-      "docker-compose.yml": "sha256:36047231c649fd710b1fe714672affe4660040cccb5eee7a0623d24fdd349225"
+      "docker-compose.yml": "sha256:8f9bd62eb18cc7e8d9bb36f8865044103611c33908296a8798efeb51d1a07450"
     },
     "keys": {
       "auth.servers[0].admin_password": {
@@ -217,12 +222,12 @@
   },
   "containers": {
     "kmu-ai-api": {
-      "image_id": "sha256:02107de3ed65f6b649b67d2ad4e3d034cb647bd9eedd5c8910b8e6291cf81ac7",
-      "image_ref": "jdone/kmu-ai-api:latest",
+      "image_id": "sha256:5bb25f9fb5d0407c56eba19f1dcab6bf4a8e3c5ec5c5cab8ba877ec083e1db36",
+      "image_ref": "jdone/kmu-ai-api:20260820-9995b1f",
       "labels": {
-        "org.opencontainers.image.revision": "a35b8f63b9df934acecf545e65251465191e16b4",
+        "org.opencontainers.image.revision": "9995b1f9fe7afdc0027703f434a1bdcd88889e5e",
         "org.opencontainers.image.title": "kmu-ai-api",
-        "org.opencontainers.image.version": "20260820-a35b8f6"
+        "org.opencontainers.image.version": "20260820-9995b1f"
       },
       "state": "running"
     },
@@ -296,7 +301,7 @@
   },
   "db": {
     "counts": {
-      "chat_sessions": 13,
+      "chat_sessions": 269,
       "collections": 1,
       "document_chunks_1024": 5359,
       "documents": 181,
@@ -323,51 +328,30 @@
   "env": "prod",
   "expected_diff": [
     {
-      "dev": "gemma-4-31b-it-awq",
+      "dev": 0,
       "mode": "pin",
-      "path": "db.models.kmu-chat-gpu.model_id",
-      "prod": "google/gemma-4-31B-it",
-      "reason": "등록명은 같아도 가리키는 모델이 다릅니다. 운영은 H200 두 장에 로컬 가중치를 직접 띄우고, 개발은 KT 노드가 서빙하는 AWQ 양자화본을 씁니다. 값을 못 박아 두었으므로 한쪽이 바뀌면 STALE-RULE 로 다시 잡힙니다.",
-      "since": "2026-08-20"
+      "path": "code.dirty_counts.untracked",
+      "prod": 5,
+      "reason": "운영에만 있는 미추적 파일: docker-compose.override.yml(/data/models 마운트)과 설정 백업들. 개수가 늘면 누군가 파일을 더 올렸거나 백업이 쌓인 것이다.",
+      "since": "2026-08-20",
+      "todo": "백업 파일이 계속 쌓이면 정리할 것"
     },
     {
-      "dev": "openai_compatible",
-      "mode": "pin",
-      "path": "db.models.kmu-chat-gpu.provider",
-      "prod": "local",
-      "reason": "운영은 pet-pass-one-node 가 GPU에 직접 띄우므로 provider=local 이고, 개발은 KT 노드의 OpenAI 호환 엔드포인트를 부르므로 openai_compatible 입니다. 호출 경로 자체가 다릅니다.",
+      "mode": "ignore",
+      "path": "config.files..env",
+      "reason": "compose 가 읽는 루트 .env. 워커 수·임베딩 스레드 수가 호스트 사양에 맞춰 다르므로 파일 해시는 항상 어긋난다. 실제 비교는 config.keys.compose_env.* 의 개별 키로 한다.",
       "since": "2026-08-20"
     },
     {
       "mode": "ignore",
-      "path": "db.models.kmu-chat",
-      "reason": "개발에만 등록된 Gemini(원격) 모델입니다. 폐쇄망에는 외부 API로 나갈 수 없어 운영에는 두지 않습니다.",
-      "since": "2026-08-20"
-    },
-    {
-      "mode": "ignore",
-      "path": "db.counts",
-      "reason": "지식베이스 내용은 코드 버전과 무관합니다. 운영은 규정 181건이 들어 있고 FAQ가 비어 있으며, 개발은 FAQ 목데이터가 있습니다. 세션 수도 계속 늘어납니다.",
-      "since": "2026-08-20"
-    },
-    {
-      "mode": "ignore",
-      "path": "images.jdone/vllm:latest",
-      "reason": "GPU 서빙 이미지는 운영에만 있습니다. 개발은 KT 노드가 대신 서빙하므로 이 이미지를 두지 않습니다.",
+      "path": "config.files.configs/.env",
+      "reason": "APP_ENV 가 환경마다 다르므로 파일 해시는 항상 어긋난다. 실제 비교는 config.keys.env.* 의 개별 키로 한다.",
       "since": "2026-08-20"
     },
     {
       "mode": "ignore",
       "path": "config.files.configs/config.yaml",
       "reason": "DB 호스트·Keycloak 주소·프롬프트 예산이 환경마다 다르므로 파일 해시는 항상 어긋납니다. 실제 비교는 config.keys.* 의 개별 키로 합니다.",
-      "since": "2026-08-20"
-    },
-    {
-      "dev": "kmu-ai-frontend",
-      "mode": "pin",
-      "path": "containers.kmu-ai-frontend.image_ref",
-      "prod": "kmu-ai-frontend:latest",
-      "reason": "같은 이미지다. 개발은 compose 가 빌드해 태그 없이 기록하고, 운영은 docker load 로 올린 :latest 를 쓴다. 실제 동일성은 image_id 로 본다.",
       "since": "2026-08-20"
     },
     {
@@ -380,14 +364,16 @@
     },
     {
       "mode": "ignore",
-      "path": "config.files..env",
-      "reason": "compose 가 읽는 루트 .env. 워커 수·임베딩 스레드 수가 호스트 사양에 맞춰 다르므로 파일 해시는 항상 어긋난다. 실제 비교는 config.keys.compose_env.* 의 개별 키로 한다.",
+      "path": "config.keys.compose_env.WORKERS",
+      "reason": "호스트 메모리가 상한을 정한다. 워커마다 임베딩 모델을 따로 올리므로(KURE-v1 약 2.2GB) 코어 수가 아니라 가용 메모리로 정한다.",
       "since": "2026-08-20"
     },
     {
-      "mode": "ignore",
-      "path": "config.keys.compose_env.WORKERS",
-      "reason": "호스트 메모리가 상한을 정한다. 워커마다 임베딩 모델을 따로 올리므로(KURE-v1 약 2.2GB) 코어 수가 아니라 가용 메모리로 정한다.",
+      "dev": "development",
+      "mode": "pin",
+      "path": "config.keys.env.APP_ENV",
+      "prod": "production",
+      "reason": "환경 표시. 원래 운영도 development 였는데 개발과 값이 같아 드리프트로 안 잡혔다(비교 도구의 사각지대). assertions 로 절대 기준을 걸어 잡아낸 뒤 바로잡았고, 이제 서로 다른 것이 정상이다.",
       "since": "2026-08-20"
     },
     {
@@ -397,16 +383,18 @@
       "since": "2026-08-20"
     },
     {
+      "dev": "jdone/kmu-ai-api:latest",
       "mode": "ignore",
-      "path": "images.jdone/kmu-ai-api:latest.id",
-      "reason": "위와 같음. 호스트 안에서 containers 쪽 ID 와 비교할 때만 의미가 있다.",
-      "since": "2026-08-20"
+      "path": "containers.kmu-ai-api.image_ref",
+      "reason": "운영은 버전 태그로, 개발은 compose 가 직접 빌드해 :latest 로 돈다. 태그는 배포마다 바뀌므로 값 비교는 하지 않는다. 대신 ':latest 가 아닐 것'을 assertions 로 강제한다.",
+      "since": "2026-08-20",
+      "todo": "ys 도 버전 태그로 옮기면 이 규칙을 지운다."
     },
     {
       "dev": "(없음)",
       "mode": "pin",
       "path": "containers.kmu-ai-api.labels.org.opencontainers.image.revision",
-      "prod": "a35b8f63b9df934acecf545e65251465191e16b4",
+      "prod": "9995b1f9fe7afdc0027703f434a1bdcd88889e5e",
       "reason": "운영 이미지는 배포 절차대로 OCI 라벨을 굽고 빌드한다. 개발은 compose 가 라벨 없이 빌드해서 비어 있다. prod 쪽 값이 배포된 산출물의 신원이다. 이 값이 배포한 커밋과 다르면 STALE-RULE 로 뜬다.",
       "since": "2026-08-20",
       "todo": "ys 빌드에도 build.labels 를 넣어 양쪽 모두 라벨을 갖게 할 것. 그러면 이 규칙 대신 revision 직접 비교로 바꿀 수 있다."
@@ -424,43 +412,64 @@
       "dev": "(없음)",
       "mode": "pin",
       "path": "containers.kmu-ai-api.labels.org.opencontainers.image.version",
-      "prod": "20260820-a35b8f6",
+      "prod": "20260820-9995b1f",
       "reason": "운영 이미지는 배포 절차대로 OCI 라벨을 굽고 빌드한다. 개발은 compose 가 라벨 없이 빌드해서 비어 있다. prod 쪽 값이 배포된 산출물의 신원이다.",
       "since": "2026-08-20",
       "todo": "ys 빌드에도 build.labels 를 넣어 양쪽 모두 라벨을 갖게 할 것. 그러면 이 규칙 대신 revision 직접 비교로 바꿀 수 있다."
     },
     {
-      "path": "config.keys.env.APP_ENV",
+      "dev": "kmu-ai-frontend",
       "mode": "pin",
-      "dev": "development",
-      "prod": "production",
-      "reason": "환경 표시. 원래 운영도 development 였는데 개발과 값이 같아 드리프트로 안 잡혔다(비교 도구의 사각지대). assertions 로 절대 기준을 걸어 잡아낸 뒤 바로잡았고, 이제 서로 다른 것이 정상이다.",
+      "path": "containers.kmu-ai-frontend.image_ref",
+      "prod": "kmu-ai-frontend:latest",
+      "reason": "같은 이미지다. 개발은 compose 가 빌드해 태그 없이 기록하고, 운영은 docker load 로 올린 :latest 를 쓴다. 실제 동일성은 image_id 로 본다.",
       "since": "2026-08-20"
     },
     {
-      "path": "config.files.configs/.env",
       "mode": "ignore",
-      "reason": "APP_ENV 가 환경마다 다르므로 파일 해시는 항상 어긋난다. 실제 비교는 config.keys.env.* 의 개별 키로 한다.",
+      "path": "db.counts",
+      "reason": "지식베이스 내용은 코드 버전과 무관합니다. 운영은 규정 181건이 들어 있고 FAQ가 비어 있으며, 개발은 FAQ 목데이터가 있습니다. 세션 수도 계속 늘어납니다.",
       "since": "2026-08-20"
     },
     {
-      "path": "code.dirty_counts.untracked",
+      "mode": "ignore",
+      "path": "db.models.kmu-chat",
+      "reason": "개발에만 등록된 Gemini(원격) 모델입니다. 폐쇄망에는 외부 API로 나갈 수 없어 운영에는 두지 않습니다.",
+      "since": "2026-08-20"
+    },
+    {
+      "dev": "gemma-4-31b-it-awq",
       "mode": "pin",
-      "dev": 0,
-      "prod": 5,
-      "reason": "운영에만 있는 미추적 파일: docker-compose.override.yml(/data/models 마운트)과 설정 백업들. 개수가 늘면 누군가 파일을 더 올렸거나 백업이 쌓인 것이다.",
-      "since": "2026-08-20",
-      "todo": "백업 파일이 계속 쌓이면 정리할 것"
+      "path": "db.models.kmu-chat-gpu.model_id",
+      "prod": "google/gemma-4-31B-it",
+      "reason": "등록명은 같아도 가리키는 모델이 다릅니다. 운영은 H200 두 장에 로컬 가중치를 직접 띄우고, 개발은 KT 노드가 서빙하는 AWQ 양자화본을 씁니다. 값을 못 박아 두었으므로 한쪽이 바뀌면 STALE-RULE 로 다시 잡힙니다.",
+      "since": "2026-08-20"
+    },
+    {
+      "dev": "openai_compatible",
+      "mode": "pin",
+      "path": "db.models.kmu-chat-gpu.provider",
+      "prod": "local",
+      "reason": "운영은 pet-pass-one-node 가 GPU에 직접 띄우므로 provider=local 이고, 개발은 KT 노드의 OpenAI 호환 엔드포인트를 부르므로 openai_compatible 입니다. 호출 경로 자체가 다릅니다.",
+      "since": "2026-08-20"
+    },
+    {
+      "mode": "ignore",
+      "path": "images.jdone/kmu-ai-api:latest.id",
+      "reason": "위와 같음. 호스트 안에서 containers 쪽 ID 와 비교할 때만 의미가 있다.",
+      "since": "2026-08-20"
+    },
+    {
+      "mode": "ignore",
+      "path": "images.jdone/vllm:latest",
+      "reason": "GPU 서빙 이미지는 운영에만 있습니다. 개발은 KT 노드가 대신 서빙하므로 이 이미지를 두지 않습니다.",
+      "since": "2026-08-20"
     }
   ],
   "images": {
     "dpage/pgadmin4:8.14": {
       "created": "2024-12-09T12:53:33.047470648Z",
       "id": "sha256:8a68677a97b8c8d1427dc915672a26d2c4a04376916a68256f53d669d6171be7"
-    },
-    "jdone/kmu-ai-api:latest": {
-      "created": "2026-08-20T04:09:14.497548272Z",
-      "id": "sha256:02107de3ed65f6b649b67d2ad4e3d034cb647bd9eedd5c8910b8e6291cf81ac7"
     },
     "jdone/vllm:latest": {
       "created": "2026-08-18T05:22:42.032168383Z",
@@ -505,7 +514,11 @@
   },
   "probe_ok": true,
   "runtime": {
-    "status": "ok"
+    "app_env": "production",
+    "commit": "9995b1f9fe7afdc0027703f434a1bdcd88889e5e",
+    "image_version": "20260820-9995b1f",
+    "status": "ok",
+    "version": "0.1.0"
   },
   "schema": 1
 }

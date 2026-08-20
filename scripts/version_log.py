@@ -204,6 +204,14 @@ def check_assertions(env, doc):
     for rule in (doc or {}).get("assertions", []) or []:
         path = rule.get("path", "")
         actual = flat.get(path, "(없음)")
+        # not_equals: "이 값이면 안 된다". 값이 배포마다 바뀌어 equals 로 고정할 수 없는데
+        # 특정 값으로 떨어지는 것만은 막아야 하는 항목에 쓴다.
+        # (운영 이미지가 :latest 로 되돌아가면 어느 빌드가 도는지 다시 알 수 없어진다)
+        if "not_equals" in rule:
+            if _same(actual, rule["not_equals"]):
+                bad.append((path, "%s 이(가) 아닐 것" % rule["not_equals"],
+                            actual, rule.get("reason", "")))
+            continue
         if not _same(actual, rule.get("equals")):
             bad.append((path, rule.get("equals"), actual, rule.get("reason", "")))
     return bad
