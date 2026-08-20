@@ -91,6 +91,20 @@ async def api_lifespan(app: FastAPI):
             run_immediately=True,
             minutes=10,
         )
+        # 규정 코퍼스 커버리지 점검 + 미완료분 재색인 (KAI-REQ-014)
+        # FAQ와 달리 규정에는 이 잡이 없어서, 2026-08-03 재색인이 죽은 뒤
+        # 45/181만 적재된 상태가 8일간 방치됐습니다.
+        #
+        # 주기가 FAQ(10분)보다 긴 이유: 문서 1건 적재가 평균 5.8분(CPU 임베딩)이라
+        # 한 번 돌면 오래 걸립니다. 진행 중이면 잡 자신이 건너뛰므로 겹치지는 않지만,
+        # 커버리지 점검 쿼리를 10분마다 돌릴 이유도 없습니다.
+        scheduler_service.scheduler.add_job(
+            scheduler_jobs.sync_incomplete_regulation_job,
+            job_id="sync_incomplete_regulation",
+            trigger="interval",
+            run_immediately=True,
+            minutes=60,
+        )
         # 미입력 세션 자동 종료 (KAI-REQ-039)
         # 기동 직후에는 실행하지 않는다. 배포 재시작마다 살아있는 세션이 한꺼번에 끊기기 때문이다.
         # ENABLE_SESSION_IDLE_TIMEOUT=false면 잡을 등록하지 않는다. (세션이 유휴로 종료되지 않음)

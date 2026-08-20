@@ -28,6 +28,7 @@ from app.config import config, env
 from app.models.auth import TokenUserInfo
 from app.models.enum import (
     SourceType,
+    DocumentStatus,
     IngestionStatus,
     IngestionItemStatus,
     VectorStatus,
@@ -43,11 +44,13 @@ from app.utils.faq_service import (
     sync_faq_item,
 )
 from app.utils.regulation_ingest import (
+    REGULATION_COLLECTION_NAME,
     REGULATION_SOURCE_TABLE,
     RegulationIngestResult,
     ensure_regulation_collection,
     ingest_regulation_directory,
     list_regulation_files,
+    regulation_coverage,
 )
 import app.models.database as db_models
 import app.models.db_item as db_items
@@ -135,6 +138,25 @@ async def reap_stale_jobs(
 
     if reaped:
         logger.warning(f"응답 없는 수집 작업을 실패로 회수했습니다. (source_type={source_type.value}, count={reaped})")
+
+        # 잡만 회수하고 문서를 그대로 두면, 그 문서는 영원히 `processing`으로 남아
+        # 상태가 거짓말을 합니다. 2026-08-03 사고에서 `3-1-4위임전결규정`이 8일 동안
+        # "처리 중"으로 표시돼 있었습니다 — 아무도 처리하고 있지 않았는데도요.
+        #
+        # 재색인 자체는 이것 없이도 동작합니다(`processing`은 completed가 아니라
+        # 건너뛰기 대상이 아님). 그래도 되돌리는 이유는 **상태를 믿을 수 있게** 하기
+        # 위해서입니다. 커버리지 점검이 `incomplete`를 세는 근거이기도 합니다.
+        if source_type == SourceType.REGULATION:
+            released = await db_manager.execute_query(
+                db_models.Document.update(status=DocumentStatus.ERROR.value,
+                                          updated_at=now)
+                .where(db_models.Document.collection_name == REGULATION_COLLECTION_NAME)
+                .where(db_models.Document.status == DocumentStatus.PROCESSING.value)
+                .where(db_models.Document.updated_at < deadline)
+            )
+            if released:
+                logger.warning(f"처리 중으로 방치된 규정 문서를 회수했습니다. (count={released})")
+
     return reaped or 0
 
 async def get_running_job(
@@ -447,16 +469,32 @@ async def run_regulation_ingestion(
         return 0, 0, 0, 0
 
     rows: list[dict[str, Any]] = []
+    progress = {"success": 0, "failed": 0, "skipped": 0}
 
     async def _record(result: RegulationIngestResult):
-        """문서 1건의 적재 결과를 수집 작업 항목으로 기록합니다."""
+        """문서 1건의 적재 결과를 즉시 기록합니다.
+
+        **문서마다 DB에 씁니다. 버퍼링하지 않습니다.**
+
+        예전에는 `BATCH_SIZE`(100)만큼 모아서 flush했는데, 규정 코퍼스는 181문서라
+        100건을 채우기 전에 프로세스가 죽으면 그때까지의 기록이 통째로 사라졌습니다.
+        2026-08-03 잡이 정확히 이렇게 죽어서, 45문서를 처리하고도
+        `ingestion_job_items`가 0행 · `success_count`가 0으로 남았습니다.
+        그 결과 "45/181만 적재된 상태"를 8일 동안 아무도 몰랐습니다.
+
+        문서 1건 적재에 평균 5.8분이 걸리므로 건당 DB write 한 번은 무시할 수 있는
+        비용입니다. 진행 상황이 보이지 않는 대가가 훨씬 큽니다.
+        """
 
         if result.failed:
             item_status = IngestionItemStatus.FAILED
+            progress["failed"] += 1
         elif result.skipped:
             item_status = IngestionItemStatus.SKIPPED
+            progress["skipped"] += 1
         else:
             item_status = IngestionItemStatus.SUCCESS
+            progress["success"] += 1
 
         rows.append({
             "id": uuid4(),
@@ -468,9 +506,17 @@ async def run_regulation_ingestion(
             "created_at": util.get_now(),
         })
 
-        if len(rows) >= BATCH_SIZE:
-            await insert_job_items(db_manager, rows)
-            rows.clear()
+        await insert_job_items(db_manager, rows)
+        rows.clear()
+
+        # 잡 카운터도 같이 올립니다. 이 값이 있어야 죽은 잡을 발견했을 때
+        # "어디까지 갔는지"를 알 수 있습니다.
+        await db_manager.execute_query(
+            db_models.IngestionJob.update(
+                success_count=progress["success"],
+                failed_count=progress["failed"],
+            ).where(db_models.IngestionJob.id == job_id)
+        )
 
     results = await ingest_regulation_directory(
         db_manager=db_manager,
@@ -563,6 +609,71 @@ async def sync_stale_faq_job():
             job_id=job_id,
             status=IngestionStatus.FAILED,
             error_message=f"FAQ 재색인 작업 중 오류가 발생했습니다. ({exc})",
+        )
+
+
+@job_decorator
+async def sync_incomplete_regulation_job():
+    """규정 코퍼스 커버리지를 점검하고, 빠진 문서가 있으면 재색인합니다.
+
+    **이 잡이 없어서 45/181만 적재된 상태가 8일 동안 방치됐습니다.**
+
+    2026-08-03 재색인 잡은 45문서를 처리한 뒤 프로세스와 함께 죽었습니다. 복구 장치는
+    이미 있었습니다 — `reap_stale_jobs()`가 죽은 잡을 회수하고, 미완료 문서는 재실행 때
+    자동으로 다시 처리됩니다. 그런데 그 재실행을 **아무도 트리거하지 않았습니다.**
+    FAQ에는 `sync_stale_faq_job`이 있었지만 규정에는 대응물이 없었고, 규정 재색인은
+    관리자가 손으로 부르는 API 하나뿐이었습니다.
+
+    잡 카운터가 아니라 `regulation_coverage()`로 **결과 상태를 직접 셉니다.**
+    잡이 어떻게 죽었든 "디스크에 181개, 완료 45개"는 언제나 진실이기 때문입니다.
+
+    한 번에 전부 적재하려 하지 않습니다. 문서 1건에 평균 5.8분(임베딩이 CPU)이 걸려
+    181문서 전량이면 17시간입니다. 스케줄 주기마다 남은 것을 이어서 처리하고,
+    이미 완료된 문서는 원문 해시가 같으면 건너뜁니다(`force=False`).
+    """
+
+    db_manager = await get_db_manager()
+
+    coverage = await regulation_coverage(db_manager)
+    if coverage["complete"]:
+        logger.debug(
+            f"규정 코퍼스 커버리지가 온전합니다. "
+            f"(files={coverage['files']}, chunks={coverage['chunks']})"
+        )
+        return
+
+    # 온전하지 않다는 사실 자체를 반드시 남깁니다. 이 한 줄이 8일을 막습니다.
+    logger.warning(
+        "규정 코퍼스가 온전하지 않습니다. 재색인을 시작합니다. "
+        f"(files={coverage['files']}, completed={coverage['completed']}, "
+        f"missing={coverage['missing']}, incomplete={coverage['incomplete']}, "
+        f"missing_files={coverage['missing_files']})"
+    )
+
+    running_job = await get_running_job(db_manager, SourceType.REGULATION)
+    if running_job:
+        logger.info(f"이미 진행 중인 규정 수집 작업이 있어 건너뜁니다. (job_id={running_job.id})")
+        return
+
+    job_id = await create_ingestion_job(db_manager, SourceType.REGULATION)
+    logger.info(
+        f"규정 재색인 작업을 시작합니다. (job_id={job_id}, missing={coverage['missing']})"
+    )
+
+    try:
+        await run_regulation_ingestion(
+            db_manager=db_manager,
+            job_id=job_id,
+            user_info=SYSTEM_USER_INFO,
+            force=False,
+        )
+    except Exception as exc:
+        logger.exception(f"규정 재색인 작업 중 오류가 발생했습니다. (job_id={job_id})")
+        await finish_ingestion_job(
+            db_manager=db_manager,
+            job_id=job_id,
+            status=IngestionStatus.FAILED,
+            error_message=f"규정 재색인 작업 중 오류가 발생했습니다. ({exc})",
         )
 
 

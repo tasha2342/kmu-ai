@@ -36,6 +36,7 @@ payload에 그대로 실어 두는 이유가 이것입니다. 문서번호·조�
 이 값들을 읽습니다.
 """
 
+import os
 import time
 import hashlib
 import unicodedata
@@ -54,6 +55,7 @@ from app.models.auth import TokenUserInfo
 from app.models.enum import DocumentStatus, ModelType, ModelStatus
 from app.utils.database import DatabaseManager
 from app.utils.hwp_extractor import extract_text_async, extract_tables_async
+from app.utils.query_synonyms import expand_for_embedding
 from app.utils.logger import get_logger
 from app.utils.regulation_chunker import chunk_document, parse_document_number
 from app.utils.vector_store import get_vector_store_manager
@@ -380,6 +382,79 @@ async def get_regulation_collection(db_manager: DatabaseManager) -> Optional[db_
     query = (db_models.Collection.select()
              .where(db_models.Collection.name == REGULATION_COLLECTION_NAME))
     return await db_manager.select_item(query)
+
+
+async def regulation_coverage(
+    db_manager: DatabaseManager,
+    directory: Optional[str | Path] = None,
+) -> dict[str, Any]:
+    """디스크의 HWP 파일과 실제 색인 결과를 대조합니다.
+
+    **이 함수가 없어서 45/181만 적재된 상태를 8일 동안 아무도 몰랐습니다.**
+
+    인제스트는 복구 장치를 갖추고 있습니다. `reap_stale_jobs()`가 죽은 잡을 회수하고,
+    미완료 문서는 재실행 때 자동으로 다시 처리됩니다. 없었던 것은 **탐지**입니다 —
+    "코퍼스에 181개가 있는데 45개만 색인됐다"를 아무도 비교하지 않았습니다.
+    잡 카운터는 마감 시점에만 쓰였고, 그 잡은 마감되지 못하고 죽었습니다.
+
+    그래서 진행 기록이 아니라 **결과 상태**를 직접 셉니다. 잡이 어떻게 죽었든
+    이 값은 언제나 진실입니다.
+
+    Args:
+        db_manager (DatabaseManager): 데이터베이스 매니저
+        directory (Optional[str | Path]): 코퍼스 디렉터리. None이면 `REGULATION_DIR`
+
+    Returns:
+        dict[str, Any]: `{files, completed, missing, incomplete, chunks, complete, missing_files}`
+            - `files`: 디스크의 HWP 수
+            - `completed`: `documents.status='completed'`인 규정 문서 수
+            - `missing`: 디스크에 있으나 완료되지 않은 파일 수
+            - `incomplete`: `completed`가 아닌 상태로 남은 문서 수 (processing/error)
+            - `complete`: 커버리지가 온전한지 여부
+    """
+
+    files = list_regulation_files(directory)
+    disk_names = {normalize_file_name(path.name) for path in files}
+
+    # 컬럼을 일부만 select하면 안 됩니다. `select_items()`가 행을 pydantic 모델로
+    # 검증하는데, 빠진 컬럼(created_at 등)이 None이 되어 ValidationError로 죽습니다.
+    # 문서는 181행뿐이라 전체를 읽어도 부담이 없습니다.
+    query = (db_models.Document.select()
+             .where(db_models.Document.collection_name == REGULATION_COLLECTION_NAME))
+    documents = await db_manager.select_items(query) or []
+
+    completed = {
+        normalize_file_name(doc.file_name)
+        for doc in documents
+        if doc.status == DocumentStatus.COMPLETED
+    }
+    incomplete = [
+        normalize_file_name(doc.file_name)
+        for doc in documents
+        if doc.status != DocumentStatus.COMPLETED
+    ]
+
+    missing_files = sorted(disk_names - completed)
+
+    chunk_count = 0
+    try:
+        info = await get_vector_store_manager().get_collection_info_async(
+            REGULATION_COLLECTION_NAME
+        )
+        chunk_count = info.get("points_count", 0)
+    except Exception:  # noqa: BLE001 — 청크 수는 참고값이라 실패해도 커버리지는 내야 합니다
+        logger.debug("규정 청크 수를 세지 못했습니다.", exc_info=True)
+
+    return {
+        "files": len(disk_names),
+        "completed": len(completed & disk_names),
+        "missing": len(missing_files),
+        "incomplete": len(incomplete),
+        "chunks": chunk_count,
+        "complete": not missing_files,
+        # 목록은 앞쪽 20개만 — 로그·응답이 181줄로 불어나면 아무도 안 읽습니다.
+        "missing_files": missing_files[:20],
+    }
 
 
 async def ensure_regulation_collection(
@@ -801,7 +876,24 @@ async def search_regulations(
         raise ValueError("학칙·규정 지식베이스의 임베딩 모델을 사용할 수 없습니다.")
 
     embed_texts = _embed_texts()
-    vectors = await embed_texts(model, user_info, [query_text])
+    # dense 임베딩용 동의어 확장. 2026-08-13 ablation으로 켜기로 했습니다.
+    #
+    # 어휘(FTS) 확장과 dense 확장을 갈라서 잰 이유는, 어휘 쪽은 tsquery를 `||`로 합쳐
+    # 결과가 원래 집합의 **상위집합**이라 손해가 구조적으로 불가능한 반면, 임베딩에
+    # 단어를 덧붙이는 것은 질의 의미 자체를 바꾸는 개입이라 손해가 날 수 있기 때문입니다.
+    #
+    # 실측 결과는 예상과 반대였습니다 (`docs/kmu_ai_eval.md` §5):
+    #   - 어휘 확장 단독: 4회 실행에서 **바뀐 문항 0건**. 정답 조항이 동의어를 담고 있지
+    #     않아(예: `5-1-7/제19조의2`에 "생활관" 없음) 문서만 올라오고 조항에 닿지 못함
+    #   - dense 확장: b=0, c=1 (SAE-005). 학칙 boost와 결합 시 b=0 유지하며 c=3
+    #
+    # 즉 이득은 전부 dense 쪽에서 나옵니다. `KMU_DENSE_SYNONYM_EXPANSION=0`으로 끌 수 있게
+    # 남겨 둔 것은 사전을 크게 늘릴 때 회귀를 다시 재기 위해서입니다.
+    embed_query = query_text
+    if os.environ.get("KMU_DENSE_SYNONYM_EXPANSION", "1") == "1":
+        embed_query = expand_for_embedding(query_text)
+
+    vectors = await embed_texts(model, user_info, [embed_query])
 
     vector_store = get_vector_store_manager()
     kwargs: dict[str, Any] = {
