@@ -1,3 +1,4 @@
+import os
 import re
 import uuid
 
@@ -7,6 +8,7 @@ from peewee import fn, Expression, SQL
 
 from app.utils.database import get_db_manager
 from app.utils.logger import get_logger
+from app.utils.query_synonyms import lexical_expansion_terms
 import app.models.database as db_models
 from app.utils import milvus_store as milvus_store_mod
 
@@ -105,6 +107,48 @@ DOC_ID_BOOST = 0.15
 
 ARTICLE_BOOST = 0.10
 """질의에 명시된 조항과 청크의 `article`이 정확히 일치할 때의 가산점"""
+
+PRIMARY_DOC_ID = "2-0-1"
+"""상위 규범 문서(학칙) 번호.
+
+학칙은 학사 질문의 1차 근거인데 주변 규정 180건에 순위가 밀립니다. 2026-08-12 실측
+(`docs/kmu_ai_eval.md` §1)에서 top-k=12로도 못 찾은 12건 중 **6건이 학칙**이었고,
+"수업연한 몇 년"처럼 학칙 제5조에 그 단어가 그대로 있는 질문까지 놓쳤습니다.
+"""
+
+PRIMARY_DOC_BOOST = float(os.environ.get("KMU_PRIMARY_DOC_BOOST", "0.05") or 0)
+"""학칙 조문에 주는 가산점. **0.05는 스윕으로 정한 값입니다.**
+
+`DOC_ID_BOOST`(0.15)와 달리 이 가산점은 질의에 근거가 없는 **선험적 편향**입니다.
+학칙을 올리면 다른 규정이 밀려나므로 평균이 아니라 McNemar의 `b`(깨진 문항)로
+판정했습니다. 2026-08-13 실측(`docs/kmu_ai_eval.md` §6), 학생 골드셋 185문항:
+
+| boost | recall_article@12 | 학칙(57) | 비학칙(128) | TRIG(15) | b | c |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0    | 172/185 | 51 | 121 | 12 | — | — |
+| 0.02 | 173/185 | 52 | 121 | 12 | 0 | 1 |
+| 0.03 | 174/185 | 53 | 121 | 12 | 0 | 2 |
+| **0.05** | **174/185** | **53** | **121** | **13** | **0** | **2** |
+| 0.07 | 174/185 | 53 | 121 | 13 | 0 | 2 |
+| 0.10 | 173/185 | 53 | **120** | 13 | **1** | 2 |
+| 0.15 | 173/185 | 53 | **120** | 13 | **1** | 2 |
+
+**상한 근거**: 0.10부터 비학칙이 121 → 120으로 깎입니다(HYU-016). 학칙 이득은
+0.03에서 이미 포화(53/57)되므로 그 위로는 이득 없이 손해만 커집니다.
+**하한 근거**: 0.02는 c=1로 이득이 절반입니다.
+0.03/0.05/0.07이 동일한 고원이고, 그중 TRIG 대조군을 하나 더 살리는 최소값이 0.05입니다.
+
+값을 바꾸려면 `KMU_PRIMARY_DOC_BOOST`로 덮어쓴 뒤 위 표를 다시 만드세요.
+평균만 보고 올리면 안 됩니다 — 0.10의 평균은 기준선보다 높은데도 `b`가 생깁니다.
+"""
+
+PRIMARY_DOC_SECTION_TYPES = ("article",)
+"""학칙 가산점을 줄 청크 유형. 조문만 올립니다.
+
+학칙 255청크 중 `addendum`(부칙)이 80건입니다. 부칙은 개정 이력 날짜를 잔뜩 품고
+있어 이미 과다 노출 경향이 있고(리포트 6.3절), 여기에 가산점까지 주면 정작 조문이
+부칙에 밀립니다. `chapter`·`section`은 제목 줄이라 근거로 쓸 내용이 없습니다.
+"""
 
 # 질의에 박힌 문서번호(`3-1-10`)와 조항(`제15조`, `제15조의2`) 패턴.
 # 청킹 단계(`regulation_chunker`)가 만드는 `doc_id`/`article` 표기와 형식을 맞춥니다.
@@ -206,6 +250,17 @@ def compute_boost(payload: dict[str, Any], signals: dict[str, list[str]]) -> flo
     article = payload.get("article")
     if article and article in signals.get("articles", []):
         boost += ARTICLE_BOOST
+
+    # 상위 규범(학칙) 가산점. 질의에 문서번호가 **없을 때만** 줍니다.
+    # 사용자가 "3-1-10 제5조"처럼 특정 문서를 짚었다면 그 의도가 우선이고,
+    # 여기서 학칙을 올리면 명시적 요청을 뒤집게 됩니다.
+    if (
+        PRIMARY_DOC_BOOST
+        and doc_id == PRIMARY_DOC_ID
+        and not signals.get("doc_ids")
+        and payload.get("section_type") in PRIMARY_DOC_SECTION_TYPES
+    ):
+        boost += PRIMARY_DOC_BOOST
 
     return boost
 
@@ -441,6 +496,17 @@ class VectorStoreManager:
         # to_tsquery와 달리 `&`, `!` 같은 연산자 문법을 해석하지 않으므로,
         # 질문 문장이 그대로 들어와도 구문 오류가 나지 않습니다. (질의문은 외부 입력입니다.)
         tsquery = fn.plainto_tsquery(config_name, query_text)
+
+        # 학생 말투 → 규정 어휘 동의어를 **OR로** 덧붙입니다. ("기숙사" → "생활관")
+        #
+        # 질의문에 확장어를 이어 붙이면 안 됩니다. plainto_tsquery가 AND로 묶기 때문에
+        # "기숙사 생활관 퇴사"는 세 단어를 모두 가진 청크만 걸려 어휘 검색이 죽습니다.
+        # tsquery끼리 `||`로 합치면 결과가 원래 집합의 **상위집합**이라 recall이
+        # 줄어들 수 없습니다. 확장어는 각각 단어 하나라 plainto_tsquery로 안전합니다.
+        # `|` 연산자를 쓰면 안 됩니다. peewee가 SQL 불리언 `OR`로 렌더링하는데,
+        # tsquery끼리의 OR는 `||` 연산자입니다. `OR`로 나가면 타입 오류가 납니다.
+        for term in lexical_expansion_terms(query_text):
+            tsquery = Expression(tsquery, "||", fn.plainto_tsquery(config_name, term))
 
         # ts_rank_cd는 커버 밀도(cover density) 기반 랭킹이라 질의어가 가깝게 모여 있는
         # 청크를 높게 봅니다. 조문처럼 짧은 텍스트에서 ts_rank보다 변별력이 좋습니다.
